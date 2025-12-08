@@ -39,11 +39,11 @@ async function run() {
 
         console.log("MongoDB connected (digital_life_lessons_db)");
 
+        // ===================== USERS APIs =====================
 
-        // create / upsert user
         app.post("/users", async (req, res) => {
             try {
-                const user = req.body; // { email, name, photoURL, ...}
+                const user = req.body;
                 if (!user?.email) {
                     return res.status(400).send({ message: "Email is required" });
                 }
@@ -71,7 +71,6 @@ async function run() {
             }
         });
 
-        // fetch single user by email
         app.get("/users/:email", async (req, res) => {
             try {
                 const email = req.params.email;
@@ -80,6 +79,48 @@ async function run() {
             } catch (err) {
                 console.error("GET /users/:email error:", err);
                 res.status(500).send({ message: "Failed to fetch user" });
+            }
+        });
+
+
+        app.post("/create-checkout-session", async (req, res) => {
+            try {
+                const { email, plan } = req.body;
+
+                if (!email) {
+                    return res.status(400).send({ message: "Email is required" });
+                }
+
+                const amount = 1500 * 100;
+
+                const session = await stripe.checkout.sessions.create({
+                    payment_method_types: ["card"],
+                    mode: "payment",
+                    customer_email: email,
+                    line_items: [
+                        {
+                            price_data: {
+                                currency: "bdt",
+                                unit_amount: amount,
+                                product_data: {
+                                    name: "Digital Life Lessons Premium – Lifetime",
+                                },
+                            },
+                            quantity: 1,
+                        },
+                    ],
+                    metadata: {
+                        email,
+                        plan: plan || "premium_lifetime",
+                    },
+                    success_url: `${process.env.SITE_DOMAIN}/payment/success?session_id={CHECKOUT_SESSION_ID}`,
+                    cancel_url: `${process.env.SITE_DOMAIN}/payment/cancel`,
+                });
+
+                res.send({ url: session.url });
+            } catch (err) {
+                console.error("POST /create-checkout-session error:", err);
+                res.status(500).send({ message: "Failed to create checkout session" });
             }
         });
 
@@ -93,7 +134,7 @@ async function run() {
             console.log(`Server listening on port ${port}`);
         });
     } finally {
-        // client.close() korini – server chalbe
+        // client.close() 
     }
 }
 

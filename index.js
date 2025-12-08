@@ -82,6 +82,7 @@ async function run() {
             }
         });
 
+        // ===================== STRIPE: CREATE CHECKOUT SESSION =====================
 
         app.post("/create-checkout-session", async (req, res) => {
             try {
@@ -124,6 +125,56 @@ async function run() {
             }
         });
 
+        // ===================== STRIPE: PAYMENT SUCCESS =====================
+
+        app.patch("/payment-success", async (req, res) => {
+            try {
+                const sessionId = req.query.session_id;
+                if (!sessionId) {
+                    return res.status(400).send({ message: "session_id is required" });
+                }
+
+                const session = await stripe.checkout.sessions.retrieve(sessionId);
+
+                const email = session.customer_email || session.metadata?.email;
+
+                if (session.payment_status === "paid" && email) {
+                    const filter = { email };
+                    const updateDoc = {
+                        $set: {
+                            email,
+                            isPremium: true,
+                            premiumSince: new Date(),
+                            lastTransactionId: session.payment_intent,
+                        },
+                        $setOnInsert: {
+                            createdAt: new Date(),
+                        },
+                    };
+
+                    const options = { upsert: true };
+                    const result = await usersCollection.updateOne(filter, updateDoc, options);
+
+                    return res.send({
+                        success: true,
+                        email,
+                        transactionId: session.payment_intent,
+                        paymentStatus: session.payment_status,
+                        dbResult: result,
+                    });
+                }
+
+                return res.send({
+                    success: false,
+                    message: "Payment not completed",
+                    paymentStatus: session.payment_status,
+                });
+            } catch (err) {
+                console.error("PATCH /payment-success error:", err);
+                res.status(500).send({ message: "Failed to process payment success" });
+            }
+        });
+
         // ===== Root route =====
         app.get("/", (req, res) => {
             res.send("Digital Life Lessons server is running");
@@ -136,6 +187,5 @@ async function run() {
     } finally {
         // client.close() 
     }
-}
 
-run().catch(console.dir);
+    run().catch(console.dir);

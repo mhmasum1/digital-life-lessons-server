@@ -1,4 +1,3 @@
-
 require("dotenv").config();
 
 const express = require("express");
@@ -184,8 +183,10 @@ async function run() {
         app.listen(port, () => {
             console.log(`Server listening on port ${port}`);
         });
-    } finally {
-        // client.close() 
+    } catch (error) {
+        console.error("MongoDB connection error:", error);
     }
+}
 
-    run().catch(console.dir);
+// Run the function
+run().catch(console.dir);

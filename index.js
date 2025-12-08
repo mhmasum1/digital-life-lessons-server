@@ -39,12 +39,56 @@ async function run() {
 
         console.log("MongoDB connected (digital_life_lessons_db)");
 
+
+        // create / upsert user
+        app.post("/users", async (req, res) => {
+            try {
+                const user = req.body; // { email, name, photoURL, ...}
+                if (!user?.email) {
+                    return res.status(400).send({ message: "Email is required" });
+                }
+
+                const filter = { email: user.email };
+                const updateDoc = {
+                    $set: {
+                        email: user.email,
+                        name: user.name || user.displayName || "",
+                        photoURL: user.photoURL || "",
+                        isPremium: user.isPremium || false,
+                        updatedAt: new Date(),
+                    },
+                    $setOnInsert: {
+                        createdAt: new Date(),
+                    },
+                };
+                const options = { upsert: true };
+
+                const result = await usersCollection.updateOne(filter, updateDoc, options);
+                res.send(result);
+            } catch (err) {
+                console.error("POST /users error:", err);
+                res.status(500).send({ message: "Failed to save user" });
+            }
+        });
+
+        // fetch single user by email
+        app.get("/users/:email", async (req, res) => {
+            try {
+                const email = req.params.email;
+                const user = await usersCollection.findOne({ email });
+                res.send(user || {});
+            } catch (err) {
+                console.error("GET /users/:email error:", err);
+                res.status(500).send({ message: "Failed to fetch user" });
+            }
+        });
+
         // ===== Root route =====
         app.get("/", (req, res) => {
             res.send("Digital Life Lessons server is running");
         });
 
-        // ===== Listen after DB connection =====
+        // ===== Listen =====
         app.listen(port, () => {
             console.log(`Server listening on port ${port}`);
         });

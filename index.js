@@ -81,6 +81,83 @@ async function run() {
             }
         });
 
+        // ===================== HOME PAGE DUMMY DATA =====================
+
+        // Featured lessons for Home.jsx
+        app.get("/lessons/featured", async (req, res) => {
+            try {
+                const lessons = [
+                    {
+                        _id: "1",
+                        title: "How to Build a Consistent Study Habit",
+                        category: "Productivity",
+                        savedCount: 12,
+                    },
+                    {
+                        _id: "2",
+                        title: "Digital Minimalism for Students",
+                        category: "Mindset",
+                        savedCount: 9,
+                    },
+                ];
+
+                res.send({ lessons });
+            } catch (err) {
+                console.error("GET /lessons/featured error:", err);
+                res.status(500).send({ message: "Failed to load featured lessons" });
+            }
+        });
+
+        // Top contributors for Home.jsx
+        app.get("/stats/top-contributors", async (req, res) => {
+            try {
+                const contributors = [
+                    {
+                        _id: "u1",
+                        name: "Mahmudul Hasan Masum",
+                        totalLessons: 5,
+                        avatar: "https://i.pravatar.cc/100?img=1",
+                    },
+                    {
+                        _id: "u2",
+                        name: "Rony",
+                        totalLessons: 3,
+                        avatar: "https://i.pravatar.cc/100?img=2",
+                    },
+                ];
+
+                res.send({ contributors });
+            } catch (err) {
+                console.error("GET /stats/top-contributors error:", err);
+                res.status(500).send({ message: "Failed to load contributors" });
+            }
+        });
+
+        // Most saved lessons for Home.jsx
+        app.get("/lessons/most-saved", async (req, res) => {
+            try {
+                const lessons = [
+                    {
+                        _id: "3",
+                        title: "Time Blocking for Busy Students",
+                        category: "Time Management",
+                        savedCount: 25,
+                    },
+                    {
+                        _id: "4",
+                        title: "How to Take Smart Notes",
+                        category: "Learning",
+                        savedCount: 19,
+                    },
+                ];
+
+                res.send({ lessons });
+            } catch (err) {
+                console.error("GET /lessons/most-saved error:", err);
+                res.status(500).send({ message: "Failed to load most saved lessons" });
+            }
+        });
+
         // ===================== STRIPE: CREATE CHECKOUT SESSION =====================
 
         app.post("/create-checkout-session", async (req, res) => {
@@ -109,10 +186,7 @@ async function run() {
                             quantity: 1,
                         },
                     ],
-                    metadata: {
-                        email,
-                        plan: plan || "premium_lifetime",
-                    },
+                    metadata: { email, plan: plan || "premium_lifetime" },
                     success_url: `${process.env.SITE_DOMAIN}/payment/success?session_id={CHECKOUT_SESSION_ID}`,
                     cancel_url: `${process.env.SITE_DOMAIN}/payment/cancel`,
                 });

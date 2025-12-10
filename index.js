@@ -1,8 +1,9 @@
+// Load environment variables first
 require("dotenv").config();
 
 const express = require("express");
 const cors = require("cors");
-const { MongoClient, ServerApiVersion } = require("mongodb");
+const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const stripe = require("stripe")(process.env.STRIPE_SECRET);
 
 const app = express();
@@ -11,7 +12,7 @@ const port = process.env.PORT || 5000;
 // ===== Middleware =====
 app.use(
     cors({
-        origin: process.env.SITE_DOMAIN,
+        origin: process.env.SITE_DOMAIN, // e.g. http://localhost:5173
         credentials: true,
     })
 );
@@ -29,17 +30,20 @@ const client = new MongoClient(uri, {
 });
 
 let usersCollection;
+let lessonsCollection;
 
 async function run() {
     try {
         await client.connect();
         const db = client.db("digital_life_lessons_db");
         usersCollection = db.collection("users");
+        lessonsCollection = db.collection("lessons");
 
         console.log("MongoDB connected (digital_life_lessons_db)");
 
         // ===================== USERS APIs =====================
 
+        // create / upsert user
         app.post("/users", async (req, res) => {
             try {
                 const user = req.body;
@@ -62,7 +66,11 @@ async function run() {
                 };
                 const options = { upsert: true };
 
-                const result = await usersCollection.updateOne(filter, updateDoc, options);
+                const result = await usersCollection.updateOne(
+                    filter,
+                    updateDoc,
+                    options
+                );
                 res.send(result);
             } catch (err) {
                 console.error("POST /users error:", err);
@@ -70,6 +78,7 @@ async function run() {
             }
         });
 
+        // single user by email
         app.get("/users/:email", async (req, res) => {
             try {
                 const email = req.params.email;
@@ -81,25 +90,89 @@ async function run() {
             }
         });
 
-        // ===================== HOME PAGE DUMMY DATA =====================
+        // ===================== LESSONS APIs =====================
+
+        // Add new lesson (AddLesson.jsx থেকে আসবে)
+        app.post("/lessons", async (req, res) => {
+            try {
+                const lesson = req.body;
+
+                if (!lesson?.title || !lesson?.shortDescription) {
+                    return res
+                        .status(400)
+                        .send({ message: "Title and short description are required" });
+                }
+
+                const doc = {
+                    title: lesson.title,
+                    shortDescription: lesson.shortDescription,
+                    details: lesson.details || "",
+                    category: lesson.category || "Self-Growth",
+                    emotionalTone: lesson.emotionalTone || "Reflective",
+                    accessLevel: lesson.accessLevel || "free", // free | premium
+                    visibility: lesson.visibility || "public", // public | private
+                    creatorEmail: lesson.creatorEmail || "",
+                    creatorName: lesson.creatorName || "",
+                    creatorPhotoURL: lesson.creatorPhotoURL || "",
+                    savedCount: lesson.savedCount || 0,
+                    createdAt: new Date(),
+                    updatedAt: new Date(),
+                    isDeleted: false,
+                };
+
+                const result = await lessonsCollection.insertOne(doc);
+                res.send(result);
+            } catch (err) {
+                console.error("POST /lessons error:", err);
+                res.status(500).send({ message: "Failed to create lesson" });
+            }
+        });
+
+        // My lessons (dashboard > My Lessons)
+        app.get("/lessons/my", async (req, res) => {
+            try {
+                const email = req.query.email;
+                if (!email) {
+                    return res
+                        .status(400)
+                        .send({ message: "email query parameter is required" });
+                }
+
+                const lessons = await lessonsCollection
+                    .find({ creatorEmail: email, isDeleted: { $ne: true } })
+                    .sort({ createdAt: -1 })
+                    .toArray();
+
+                res.send(lessons);
+            } catch (err) {
+                console.error("GET /lessons/my error:", err);
+                res.status(500).send({ message: "Failed to load your lessons" });
+            }
+        });
+
+        // Public lessons (Browse Public Life Lessons page)
+        app.get("/lessons/public", async (req, res) => {
+            try {
+                const lessons = await lessonsCollection
+                    .find({ visibility: "public", isDeleted: { $ne: true } })
+                    .sort({ createdAt: -1 })
+                    .toArray();
+
+                res.send({ lessons });
+            } catch (err) {
+                console.error("GET /lessons/public error:", err);
+                res.status(500).send({ message: "Failed to load public lessons" });
+            }
+        });
 
         // Featured lessons for Home.jsx
         app.get("/lessons/featured", async (req, res) => {
             try {
-                const lessons = [
-                    {
-                        _id: "1",
-                        title: "How to Build a Consistent Study Habit",
-                        category: "Productivity",
-                        savedCount: 12,
-                    },
-                    {
-                        _id: "2",
-                        title: "Digital Minimalism for Students",
-                        category: "Mindset",
-                        savedCount: 9,
-                    },
-                ];
+                const lessons = await lessonsCollection
+                    .find({ visibility: "public", isDeleted: { $ne: true } })
+                    .sort({ createdAt: -1 })
+                    .limit(6)
+                    .toArray();
 
                 res.send({ lessons });
             } catch (err) {
@@ -108,53 +181,116 @@ async function run() {
             }
         });
 
-        // Top contributors for Home.jsx
-        app.get("/stats/top-contributors", async (req, res) => {
-            try {
-                const contributors = [
-                    {
-                        _id: "u1",
-                        name: "Mahmudul Hasan Masum",
-                        totalLessons: 5,
-                        avatar: "https://i.pravatar.cc/100?img=1",
-                    },
-                    {
-                        _id: "u2",
-                        name: "Rony",
-                        totalLessons: 3,
-                        avatar: "https://i.pravatar.cc/100?img=2",
-                    },
-                ];
-
-                res.send({ contributors });
-            } catch (err) {
-                console.error("GET /stats/top-contributors error:", err);
-                res.status(500).send({ message: "Failed to load contributors" });
-            }
-        });
-
         // Most saved lessons for Home.jsx
         app.get("/lessons/most-saved", async (req, res) => {
             try {
-                const lessons = [
-                    {
-                        _id: "3",
-                        title: "Time Blocking for Busy Students",
-                        category: "Time Management",
-                        savedCount: 25,
-                    },
-                    {
-                        _id: "4",
-                        title: "How to Take Smart Notes",
-                        category: "Learning",
-                        savedCount: 19,
-                    },
-                ];
+                const lessons = await lessonsCollection
+                    .find({ visibility: "public", isDeleted: { $ne: true } })
+                    .sort({ savedCount: -1 })
+                    .limit(6)
+                    .toArray();
 
                 res.send({ lessons });
             } catch (err) {
                 console.error("GET /lessons/most-saved error:", err);
                 res.status(500).send({ message: "Failed to load most saved lessons" });
+            }
+        });
+
+        // Single lesson details
+        app.get("/lessons/:id", async (req, res) => {
+            try {
+                const id = req.params.id;
+                if (!ObjectId.isValid(id)) {
+                    return res.status(400).send({ message: "Invalid lesson id" });
+                }
+
+                const lesson = await lessonsCollection.findOne({
+                    _id: new ObjectId(id),
+                    isDeleted: { $ne: true },
+                });
+
+                if (!lesson) {
+                    return res.status(404).send({ message: "Lesson not found" });
+                }
+
+                res.send(lesson);
+            } catch (err) {
+                console.error("GET /lessons/:id error:", err);
+                res.status(500).send({ message: "Failed to load lesson" });
+            }
+        });
+
+        // Update lesson (UpdateLesson.jsx থেকে)
+        app.patch("/lessons/:id", async (req, res) => {
+            try {
+                const id = req.params.id;
+                if (!ObjectId.isValid(id)) {
+                    return res.status(400).send({ message: "Invalid lesson id" });
+                }
+
+                const body = req.body || {};
+                const allowedFields = [
+                    "title",
+                    "shortDescription",
+                    "details",
+                    "category",
+                    "emotionalTone",
+                    "accessLevel",
+                    "visibility",
+                ];
+
+                const updateDoc = {
+                    $set: {
+                        updatedAt: new Date(),
+                    },
+                };
+
+                allowedFields.forEach((field) => {
+                    if (body[field] !== undefined) {
+                        updateDoc.$set[field] = body[field];
+                    }
+                });
+
+                const result = await lessonsCollection.updateOne(
+                    { _id: new ObjectId(id) },
+                    updateDoc
+                );
+
+                res.send(result);
+            } catch (err) {
+                console.error("PATCH /lessons/:id error:", err);
+                res.status(500).send({ message: "Failed to update lesson" });
+            }
+        });
+
+        // ===================== STATS APIs (Home top contributors) =====================
+
+        app.get("/stats/top-contributors", async (req, res) => {
+            try {
+                // aggregate total lessons by creatorEmail
+                const pipeline = [
+                    { $match: { isDeleted: { $ne: true } } },
+                    {
+                        $group: {
+                            _id: "$creatorEmail",
+                            totalLessons: { $sum: 1 },
+                            name: { $first: "$creatorName" },
+                            avatar: { $first: "$creatorPhotoURL" },
+                        },
+                    },
+                    { $sort: { totalLessons: -1 } },
+                    { $limit: 6 },
+                ];
+
+                const contributors = await lessonsCollection
+                    .aggregate(pipeline)
+                    .toArray();
+
+                res.send({ contributors });
+            } catch (err) {
+                console.error("GET /stats/top-contributors error:", err);
+                res.status(500).send({ message: "Failed to load contributors" });
             }
         });
 
@@ -168,7 +304,16 @@ async function run() {
                     return res.status(400).send({ message: "Email is required" });
                 }
 
-                const amount = 1500 * 100;
+                // Already premium? then block multiple payments
+                const existingUser = await usersCollection.findOne({ email });
+
+                if (existingUser?.isPremium) {
+                    return res.status(400).send({
+                        message: "You are already a Premium user. Lifetime access is active.",
+                    });
+                }
+
+                const amount = 1500 * 100; // in paisa
 
                 const session = await stripe.checkout.sessions.create({
                     payment_method_types: ["card"],
@@ -226,7 +371,11 @@ async function run() {
                     };
 
                     const options = { upsert: true };
-                    const result = await usersCollection.updateOne(filter, updateDoc, options);
+                    const result = await usersCollection.updateOne(
+                        filter,
+                        updateDoc,
+                        options
+                    );
 
                     return res.send({
                         success: true,

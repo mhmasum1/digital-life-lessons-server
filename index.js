@@ -552,7 +552,8 @@ async function run() {
                     ])
                     .toArray();
 
-                res.send(favs);
+                res.send({ favorites: favs });
+
             } catch (err) {
                 console.error("GET /favorites error:", err);
                 res.status(500).send({ message: "Failed to load favorites" });
@@ -577,9 +578,10 @@ async function run() {
                 const result = await favoritesCollection.deleteOne({ _id: new ObjectId(id) });
 
                 await lessonsCollection.updateOne(
-                    { _id: fav.lessonId },
+                    { _id: fav.lessonId, savedCount: { $gt: 0 } },
                     { $inc: { savedCount: -1 } }
                 );
+
 
                 res.send(result);
             } catch (err) {

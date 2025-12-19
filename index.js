@@ -1,7 +1,7 @@
 require("dotenv").config();
-const jwt = require("jsonwebtoken");
 const express = require("express");
 const cors = require("cors");
+const jwt = require("jsonwebtoken");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const stripe = require("stripe")(process.env.STRIPE_SECRET);
 
@@ -28,23 +28,6 @@ const client = new MongoClient(uri, {
     },
 });
 
-app.post("/jwt", async (req, res) => {
-    const user = req.body; // { email }
-    if (!user?.email) return res.status(400).send({ message: "email required" });
-
-    const dbUser = await usersCollection.findOne({ email: user.email });
-    if (!dbUser) return res.status(401).send({ message: "unauthorized" });
-
-    const token = jwt.sign(
-        { email: user.email },
-        process.env.ACCESS_TOKEN_SECRET,
-        { expiresIn: "7d" }
-    );
-
-    res.send({ token });
-});
-
-
 let usersCollection;
 let lessonsCollection;
 
@@ -52,10 +35,58 @@ async function run() {
     try {
         await client.connect();
         const db = client.db("digital_life_lessons_db");
+
         usersCollection = db.collection("users");
         lessonsCollection = db.collection("lessons");
 
         console.log("MongoDB connected (digital_life_lessons_db)");
+
+        // ===================== AUTH / JWT =====================
+        app.post("/jwt", async (req, res) => {
+            try {
+                const user = req.body; // { email }
+                if (!user?.email) {
+                    return res.status(400).send({ message: "email required" });
+                }
+
+                const dbUser = await usersCollection.findOne({ email: user.email });
+                if (!dbUser) {
+                    return res.status(401).send({ message: "unauthorized" });
+                }
+
+                const token = jwt.sign(
+                    { email: user.email },
+                    process.env.ACCESS_TOKEN_SECRET,
+                    { expiresIn: "7d" }
+                );
+
+                res.send({ token });
+            } catch (err) {
+                console.error("POST /jwt error:", err);
+                res.status(500).send({ message: "Failed to create token" });
+            }
+        });
+
+        const verifyToken = (req, res, next) => {
+            const authHeader = req.headers.authorization;
+            if (!authHeader) return res.status(401).send({ message: "unauthorized" });
+
+            const token = authHeader.split(" ")[1];
+            jwt.verify(token, process.env.ACCESS_TOKEN_SECRET, (err, decoded) => {
+                if (err) return res.status(401).send({ message: "unauthorized" });
+                req.decoded = decoded; // { email }
+                next();
+            });
+        };
+
+        const verifyAdmin = async (req, res, next) => {
+            const email = req.decoded?.email;
+            const user = await usersCollection.findOne({ email });
+            if (!user || user.role !== "admin") {
+                return res.status(403).send({ message: "forbidden" });
+            }
+            next();
+        };
 
         // ===================== USERS APIs =====================
 
@@ -78,6 +109,7 @@ async function run() {
                     },
                     $setOnInsert: {
                         createdAt: new Date(),
+                        role: "user", // ✅ default role
                     },
                 };
                 const options = { upsert: true };
@@ -106,9 +138,54 @@ async function run() {
             }
         });
 
-        // ===================== LESSONS APIs =====================
+        // check admin by email (for client AdminRoute/useAdmin)
+        app.get("/users/admin/:email", verifyToken, async (req, res) => {
+            try {
+                const email = req.params.email;
 
-        // Add new lesson (AddLesson.jsx থেকে আসবে)
+                if (req.decoded.email !== email) {
+                    return res.status(403).send({ message: "forbidden" });
+                }
+
+                const user = await usersCollection.findOne({ email });
+                res.send({ admin: user?.role === "admin" });
+            } catch (err) {
+                console.error("GET /users/admin/:email error:", err);
+                res.status(500).send({ message: "Failed to verify admin" });
+            }
+        });
+
+        // admin: get all users
+        app.get("/users", verifyToken, verifyAdmin, async (req, res) => {
+            try {
+                const users = await usersCollection
+                    .find()
+                    .sort({ createdAt: -1 })
+                    .toArray();
+                res.send(users);
+            } catch (err) {
+                console.error("GET /users error:", err);
+                res.status(500).send({ message: "Failed to load users" });
+            }
+        });
+
+        // admin: make admin
+        app.patch("/users/admin/:email", verifyToken, verifyAdmin, async (req, res) => {
+            try {
+                const email = req.params.email;
+                const result = await usersCollection.updateOne(
+                    { email },
+                    { $set: { role: "admin", updatedAt: new Date() } }
+                );
+                res.send(result);
+            } catch (err) {
+                console.error("PATCH /users/admin/:email error:", err);
+                res.status(500).send({ message: "Failed to make admin" });
+            }
+        });
+
+        // ===================== LESSONS APIs (your existing) =====================
+
         app.post("/lessons", async (req, res) => {
             try {
                 const lesson = req.body;
@@ -125,8 +202,8 @@ async function run() {
                     details: lesson.details || "",
                     category: lesson.category || "Self-Growth",
                     emotionalTone: lesson.emotionalTone || "Reflective",
-                    accessLevel: lesson.accessLevel || "free", // free | premium
-                    visibility: lesson.visibility || "public", // public | private
+                    accessLevel: lesson.accessLevel || "free",
+                    visibility: lesson.visibility || "public",
                     creatorEmail: lesson.creatorEmail || "",
                     creatorName: lesson.creatorName || "",
                     creatorPhotoURL: lesson.creatorPhotoURL || "",
@@ -144,7 +221,6 @@ async function run() {
             }
         });
 
-        // My lessons (dashboard > My Lessons)
         app.get("/lessons/my", async (req, res) => {
             try {
                 const email = req.query.email;
@@ -166,7 +242,6 @@ async function run() {
             }
         });
 
-        // Public lessons (Browse Public Life Lessons page)
         app.get("/lessons/public", async (req, res) => {
             try {
                 const lessons = await lessonsCollection
@@ -181,7 +256,6 @@ async function run() {
             }
         });
 
-        // Featured lessons for Home.jsx
         app.get("/lessons/featured", async (req, res) => {
             try {
                 const lessons = await lessonsCollection
@@ -197,7 +271,6 @@ async function run() {
             }
         });
 
-        // Most saved lessons for Home.jsx
         app.get("/lessons/most-saved", async (req, res) => {
             try {
                 const lessons = await lessonsCollection
@@ -213,7 +286,6 @@ async function run() {
             }
         });
 
-        // Single lesson details
         app.get("/lessons/:id", async (req, res) => {
             try {
                 const id = req.params.id;
@@ -237,7 +309,6 @@ async function run() {
             }
         });
 
-        // Update lesson (UpdateLesson.jsx থেকে)
         app.patch("/lessons/:id", async (req, res) => {
             try {
                 const id = req.params.id;
@@ -280,8 +351,7 @@ async function run() {
             }
         });
 
-        // ===================== STATS APIs (Home top contributors) =====================
-
+        // ===================== STATS APIs =====================
         app.get("/stats/top-contributors", async (req, res) => {
             try {
                 const pipeline = [
@@ -309,8 +379,7 @@ async function run() {
             }
         });
 
-        // ===================== STRIPE: CREATE CHECKOUT SESSION =====================
-
+        // ===================== STRIPE =====================
         app.post("/create-checkout-session", async (req, res) => {
             try {
                 const { email, plan } = req.body;
@@ -319,16 +388,14 @@ async function run() {
                     return res.status(400).send({ message: "Email is required" });
                 }
 
-                // Already premium? then block multiple payments
                 const existingUser = await usersCollection.findOne({ email });
-
                 if (existingUser?.isPremium) {
                     return res.status(400).send({
                         message: "You are already a Premium user. Lifetime access is active.",
                     });
                 }
 
-                const amount = 1500 * 100; // in paisa
+                const amount = 1500 * 100;
 
                 const session = await stripe.checkout.sessions.create({
                     payment_method_types: ["card"],
@@ -358,8 +425,6 @@ async function run() {
             }
         });
 
-        // ===================== STRIPE: PAYMENT SUCCESS =====================
-
         app.patch("/payment-success", async (req, res) => {
             try {
                 const sessionId = req.query.session_id;
@@ -368,7 +433,6 @@ async function run() {
                 }
 
                 const session = await stripe.checkout.sessions.retrieve(sessionId);
-
                 const email = session.customer_email || session.metadata?.email;
 
                 if (session.payment_status === "paid" && email) {
@@ -426,5 +490,4 @@ async function run() {
     }
 }
 
-// Run the function
 run().catch(console.dir);

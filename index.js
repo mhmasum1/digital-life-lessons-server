@@ -247,6 +247,39 @@ async function run() {
                 res.status(500).send({ message: "Failed to load your lessons" });
             }
         });
+        // ===================== USER: DELETE MY LESSON (SOFT DELETE) =====================
+        app.delete("/lessons/my/:id", verifyToken, async (req, res) => {
+            try {
+                const id = req.params.id;
+                if (!ObjectId.isValid(id)) {
+                    return res.status(400).send({ message: "Invalid lesson id" });
+                }
+
+                const email = req.decoded?.email;
+
+                // find lesson
+                const lesson = await lessonsCollection.findOne({ _id: new ObjectId(id) });
+                if (!lesson || lesson?.isDeleted === true) {
+                    return res.status(404).send({ message: "Lesson not found" });
+                }
+
+                // owner check
+                if (lesson.creatorEmail !== email) {
+                    return res.status(403).send({ message: "forbidden" });
+                }
+
+                const result = await lessonsCollection.updateOne(
+                    { _id: new ObjectId(id) },
+                    { $set: { isDeleted: true, updatedAt: new Date() } }
+                );
+
+                res.send(result);
+            } catch (err) {
+                console.error("DELETE /lessons/my/:id error:", err);
+                res.status(500).send({ message: "Failed to delete lesson" });
+            }
+        });
+
 
         // Public lessons
         app.get("/lessons/public", async (req, res) => {

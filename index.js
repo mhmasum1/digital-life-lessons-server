@@ -1,6 +1,5 @@
-// Load environment variables first
 require("dotenv").config();
-
+const jwt = require("jsonwebtoken");
 const express = require("express");
 const cors = require("cors");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
@@ -12,7 +11,7 @@ const port = process.env.PORT || 5000;
 // ===== Middleware =====
 app.use(
     cors({
-        origin: process.env.SITE_DOMAIN, // e.g. http://localhost:5173
+        origin: process.env.SITE_DOMAIN,
         credentials: true,
     })
 );
@@ -28,6 +27,23 @@ const client = new MongoClient(uri, {
         deprecationErrors: true,
     },
 });
+
+app.post("/jwt", async (req, res) => {
+    const user = req.body; // { email }
+    if (!user?.email) return res.status(400).send({ message: "email required" });
+
+    const dbUser = await usersCollection.findOne({ email: user.email });
+    if (!dbUser) return res.status(401).send({ message: "unauthorized" });
+
+    const token = jwt.sign(
+        { email: user.email },
+        process.env.ACCESS_TOKEN_SECRET,
+        { expiresIn: "7d" }
+    );
+
+    res.send({ token });
+});
+
 
 let usersCollection;
 let lessonsCollection;
@@ -268,7 +284,6 @@ async function run() {
 
         app.get("/stats/top-contributors", async (req, res) => {
             try {
-                // aggregate total lessons by creatorEmail
                 const pipeline = [
                     { $match: { isDeleted: { $ne: true } } },
                     {

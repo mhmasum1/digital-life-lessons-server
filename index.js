@@ -30,6 +30,8 @@ const client = new MongoClient(uri, {
 
 let usersCollection;
 let lessonsCollection;
+let reportsCollection;
+let favoritesCollection;
 
 async function run() {
     try {
@@ -38,13 +40,15 @@ async function run() {
 
         usersCollection = db.collection("users");
         lessonsCollection = db.collection("lessons");
+        reportsCollection = db.collection("reports");
+        favoritesCollection = db.collection("favorites");
 
         console.log("MongoDB connected (digital_life_lessons_db)");
 
         // ===================== AUTH / JWT =====================
         app.post("/jwt", async (req, res) => {
             try {
-                const user = req.body; // { email }
+                const user = req.body;
                 if (!user?.email) {
                     return res.status(400).send({ message: "email required" });
                 }
@@ -74,7 +78,7 @@ async function run() {
             const token = authHeader.split(" ")[1];
             jwt.verify(token, process.env.ACCESS_TOKEN_SECRET, (err, decoded) => {
                 if (err) return res.status(401).send({ message: "unauthorized" });
-                req.decoded = decoded; // { email }
+                req.decoded = decoded;
                 next();
             });
         };
@@ -109,7 +113,7 @@ async function run() {
                     },
                     $setOnInsert: {
                         createdAt: new Date(),
-                        role: "user", // ✅ default role
+                        role: "user",
                     },
                 };
                 const options = { upsert: true };
@@ -138,7 +142,7 @@ async function run() {
             }
         });
 
-        // check admin by email (for client AdminRoute/useAdmin)
+        // check admin by email
         app.get("/users/admin/:email", verifyToken, async (req, res) => {
             try {
                 const email = req.params.email;
@@ -184,8 +188,9 @@ async function run() {
             }
         });
 
-        // ===================== LESSONS APIs (your existing) =====================
+        // ===================== LESSONS APIs =====================
 
+        // Add new lesson
         app.post("/lessons", async (req, res) => {
             try {
                 const lesson = req.body;
@@ -221,6 +226,7 @@ async function run() {
             }
         });
 
+        // My lessons
         app.get("/lessons/my", async (req, res) => {
             try {
                 const email = req.query.email;
@@ -242,6 +248,7 @@ async function run() {
             }
         });
 
+        // Public lessons
         app.get("/lessons/public", async (req, res) => {
             try {
                 const lessons = await lessonsCollection
@@ -256,6 +263,7 @@ async function run() {
             }
         });
 
+        // Featured lessons
         app.get("/lessons/featured", async (req, res) => {
             try {
                 const lessons = await lessonsCollection
@@ -271,6 +279,7 @@ async function run() {
             }
         });
 
+        // Most saved lessons
         app.get("/lessons/most-saved", async (req, res) => {
             try {
                 const lessons = await lessonsCollection
@@ -286,6 +295,7 @@ async function run() {
             }
         });
 
+        // Single lesson details
         app.get("/lessons/:id", async (req, res) => {
             try {
                 const id = req.params.id;
@@ -309,6 +319,7 @@ async function run() {
             }
         });
 
+        // Update lesson
         app.patch("/lessons/:id", async (req, res) => {
             try {
                 const id = req.params.id;
@@ -351,6 +362,39 @@ async function run() {
             }
         });
 
+        // ===================== ADMIN LESSONS APIs =====================
+        app.get("/lessons", verifyToken, verifyAdmin, async (req, res) => {
+            try {
+                const lessons = await lessonsCollection
+                    .find({ isDeleted: { $ne: true } })
+                    .sort({ createdAt: -1 })
+                    .toArray();
+                res.send(lessons);
+            } catch (err) {
+                console.error("GET /lessons (admin) error:", err);
+                res.status(500).send({ message: "Failed to load lessons" });
+            }
+        });
+
+        app.delete("/lessons/:id", verifyToken, verifyAdmin, async (req, res) => {
+            try {
+                const id = req.params.id;
+                if (!ObjectId.isValid(id)) {
+                    return res.status(400).send({ message: "Invalid lesson id" });
+                }
+
+                const result = await lessonsCollection.updateOne(
+                    { _id: new ObjectId(id) },
+                    { $set: { isDeleted: true, updatedAt: new Date() } }
+                );
+
+                res.send(result);
+            } catch (err) {
+                console.error("DELETE /lessons/:id (admin) error:", err);
+                res.status(500).send({ message: "Failed to delete lesson" });
+            }
+        });
+
         // ===================== STATS APIs =====================
         app.get("/stats/top-contributors", async (req, res) => {
             try {
@@ -379,7 +423,173 @@ async function run() {
             }
         });
 
+        // ===================== REPORTS APIs =====================
+
+        // user: report a lesson
+        app.post("/reports", verifyToken, async (req, res) => {
+            try {
+                const { lessonId, reason, message } = req.body;
+
+                if (!lessonId || !ObjectId.isValid(lessonId)) {
+                    return res.status(400).send({ message: "Valid lessonId is required" });
+                }
+
+                const doc = {
+                    lessonId: new ObjectId(lessonId),
+                    reason: reason || "Other",
+                    message: message || "",
+                    reporterEmail: req.decoded.email,
+                    status: "pending",
+                    createdAt: new Date(),
+                };
+
+                const result = await reportsCollection.insertOne(doc);
+                res.send(result);
+            } catch (err) {
+                console.error("POST /reports error:", err);
+                res.status(500).send({ message: "Failed to submit report" });
+            }
+        });
+
+        // admin: get all reports
+        app.get("/reports", verifyToken, verifyAdmin, async (req, res) => {
+            try {
+                const reports = await reportsCollection
+                    .find()
+                    .sort({ createdAt: -1 })
+                    .toArray();
+
+                res.send(reports);
+            } catch (err) {
+                console.error("GET /reports error:", err);
+                res.status(500).send({ message: "Failed to load reports" });
+            }
+        });
+
+        // admin: resolve report
+        app.patch("/reports/:id/resolve", verifyToken, verifyAdmin, async (req, res) => {
+            try {
+                const id = req.params.id;
+                if (!ObjectId.isValid(id)) {
+                    return res.status(400).send({ message: "Invalid report id" });
+                }
+
+                const result = await reportsCollection.updateOne(
+                    { _id: new ObjectId(id) },
+                    { $set: { status: "resolved", resolvedAt: new Date() } }
+                );
+
+                res.send(result);
+            } catch (err) {
+                console.error("PATCH /reports/:id/resolve error:", err);
+                res.status(500).send({ message: "Failed to resolve report" });
+            }
+        });
+
+        // ===================== FAVORITES APIs =====================
+
+        // add favorite + inc savedCount
+        app.post("/favorites", verifyToken, async (req, res) => {
+            try {
+                const { lessonId } = req.body;
+
+                if (!lessonId || !ObjectId.isValid(lessonId)) {
+                    return res.status(400).send({ message: "Valid lessonId is required" });
+                }
+
+                const email = req.decoded.email;
+                const lessonObjectId = new ObjectId(lessonId);
+
+                const existing = await favoritesCollection.findOne({
+                    lessonId: lessonObjectId,
+                    userEmail: email,
+                });
+
+                if (existing) {
+                    return res.status(400).send({ message: "Already in favorites" });
+                }
+
+                const favDoc = {
+                    lessonId: lessonObjectId,
+                    userEmail: email,
+                    createdAt: new Date(),
+                };
+
+                const result = await favoritesCollection.insertOne(favDoc);
+
+                await lessonsCollection.updateOne(
+                    { _id: lessonObjectId },
+                    { $inc: { savedCount: 1 } }
+                );
+
+                res.send(result);
+            } catch (err) {
+                console.error("POST /favorites error:", err);
+                res.status(500).send({ message: "Failed to add favorite" });
+            }
+        });
+
+        // get my favorites
+        app.get("/favorites", verifyToken, async (req, res) => {
+            try {
+                const email = req.decoded.email;
+
+                const favs = await favoritesCollection
+                    .aggregate([
+                        { $match: { userEmail: email } },
+                        {
+                            $lookup: {
+                                from: "lessons",
+                                localField: "lessonId",
+                                foreignField: "_id",
+                                as: "lesson",
+                            },
+                        },
+                        { $unwind: "$lesson" },
+                        { $match: { "lesson.isDeleted": { $ne: true } } },
+                        { $sort: { createdAt: -1 } },
+                        { $project: { _id: 1, lesson: 1, createdAt: 1 } },
+                    ])
+                    .toArray();
+
+                res.send(favs);
+            } catch (err) {
+                console.error("GET /favorites error:", err);
+                res.status(500).send({ message: "Failed to load favorites" });
+            }
+        });
+
+        // remove favorite + dec savedCount
+        app.delete("/favorites/:id", verifyToken, async (req, res) => {
+            try {
+                const id = req.params.id;
+                if (!ObjectId.isValid(id)) {
+                    return res.status(400).send({ message: "Invalid favorite id" });
+                }
+
+                const email = req.decoded.email;
+
+                const fav = await favoritesCollection.findOne({ _id: new ObjectId(id) });
+                if (!fav || fav.userEmail !== email) {
+                    return res.status(403).send({ message: "forbidden" });
+                }
+
+                const result = await favoritesCollection.deleteOne({ _id: new ObjectId(id) });
+
+                await lessonsCollection.updateOne(
+                    { _id: fav.lessonId },
+                    { $inc: { savedCount: -1 } }
+                );
+
+                res.send(result);
+            } catch (err) {
+                console.error("DELETE /favorites/:id error:", err);
+                res.status(500).send({ message: "Failed to remove favorite" });
+            }
+        });
+
         // ===================== STRIPE =====================
+
         app.post("/create-checkout-session", async (req, res) => {
             try {
                 const { email, plan } = req.body;

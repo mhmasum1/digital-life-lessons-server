@@ -919,5 +919,11 @@ app.patch("/payment-success", async (req, res) => {
     }
 });
 
+
+app.get("/", (req, res) => {
+    res.send("Digital Life Lessons server is running");
+});
+
 // IMPORTANT: Vercel/serverless expects app export
 module.exports = app;
+

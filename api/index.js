@@ -909,11 +909,12 @@ async function run() {
         });
         // ===== Listen =====
         app.listen(port, () => {
-            console.log(`Server listening on port ${port}`);
+            // console.log(`Server listening on port ${port}`);
         });
     } catch (error) {
-        console.error("MongoDB connection error:", error);
+        // console.error("MongoDB connection error:", error);
     }
 }
 
 run().catch(console.dir);
+module.exports = app;

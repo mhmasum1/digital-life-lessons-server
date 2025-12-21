@@ -11,7 +11,7 @@ const port = process.env.PORT || 5000;
 // ===== Middleware =====
 app.use(
     cors({
-        origin: process.env.SITE_DOMAIN,
+        origin: process.env.SITE_DOMAIN || "*",
         credentials: true,
     })
 );

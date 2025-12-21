@@ -32,6 +32,7 @@ let usersCollection;
 let lessonsCollection;
 let reportsCollection;
 let favoritesCollection;
+let commentsCollection;
 
 async function run() {
     try {
@@ -42,6 +43,7 @@ async function run() {
         lessonsCollection = db.collection("lessons");
         reportsCollection = db.collection("reports");
         favoritesCollection = db.collection("favorites");
+        commentsCollection = db.collection("comments");
 
         console.log("MongoDB connected (digital_life_lessons_db)");
 
@@ -91,6 +93,7 @@ async function run() {
             }
             next();
         };
+
         // ===================== ADMIN STATS =====================
         app.get("/admin/stats", verifyToken, verifyAdmin, async (req, res) => {
             try {
@@ -115,8 +118,6 @@ async function run() {
                 res.status(500).send({ message: "Failed to load admin stats" });
             }
         });
-
-
 
         // ===================== USERS APIs =====================
 
@@ -214,6 +215,29 @@ async function run() {
             }
         });
 
+        // admin: delete user
+        app.delete("/users/:email", verifyToken, verifyAdmin, async (req, res) => {
+            try {
+                const email = req.params.email;
+
+                // Prevent self-deletion
+                if (req.decoded.email === email) {
+                    return res.status(400).send({ message: "You cannot delete yourself" });
+                }
+
+                const result = await usersCollection.deleteOne({ email });
+
+                if (result.deletedCount === 0) {
+                    return res.status(404).send({ message: "User not found" });
+                }
+
+                res.send(result);
+            } catch (err) {
+                console.error("DELETE /users/:email error:", err);
+                res.status(500).send({ message: "Failed to delete user" });
+            }
+        });
+
         // ===================== LESSONS APIs =====================
 
         // Add new lesson
@@ -239,6 +263,8 @@ async function run() {
                     creatorName: lesson.creatorName || "",
                     creatorPhotoURL: lesson.creatorPhotoURL || "",
                     savedCount: lesson.savedCount || 0,
+                    likesCount: 0,
+                    likes: [],
                     createdAt: new Date(),
                     updatedAt: new Date(),
                     isDeleted: false,
@@ -273,7 +299,8 @@ async function run() {
                 res.status(500).send({ message: "Failed to load your lessons" });
             }
         });
-        // ===================== USER: DELETE MY LESSON (SOFT DELETE) =====================
+
+        // User: delete my lesson (soft delete)
         app.delete("/lessons/my/:id", verifyToken, async (req, res) => {
             try {
                 const id = req.params.id;
@@ -283,13 +310,11 @@ async function run() {
 
                 const email = req.decoded?.email;
 
-                // find lesson
                 const lesson = await lessonsCollection.findOne({ _id: new ObjectId(id) });
                 if (!lesson || lesson?.isDeleted === true) {
                     return res.status(404).send({ message: "Lesson not found" });
                 }
 
-                // owner check
                 if (lesson.creatorEmail !== email) {
                     return res.status(403).send({ message: "forbidden" });
                 }
@@ -305,7 +330,6 @@ async function run() {
                 res.status(500).send({ message: "Failed to delete lesson" });
             }
         });
-
 
         // Public lessons
         app.get("/lessons/public", async (req, res) => {
@@ -418,6 +442,122 @@ async function run() {
             } catch (err) {
                 console.error("PATCH /lessons/:id error:", err);
                 res.status(500).send({ message: "Failed to update lesson" });
+            }
+        });
+
+        // ========== LIKE SYSTEM ========== 
+        app.patch("/lessons/:id/like", verifyToken, async (req, res) => {
+            try {
+                const id = req.params.id;
+                if (!ObjectId.isValid(id)) {
+                    return res.status(400).send({ message: "Invalid lesson id" });
+                }
+
+                const userId = req.decoded.email;
+
+                const lesson = await lessonsCollection.findOne({
+                    _id: new ObjectId(id),
+                    isDeleted: { $ne: true },
+                });
+
+                if (!lesson) {
+                    return res.status(404).send({ message: "Lesson not found" });
+                }
+
+                const likes = lesson.likes || [];
+                const hasLiked = likes.includes(userId);
+
+                if (hasLiked) {
+                    // Remove like
+                    await lessonsCollection.updateOne(
+                        { _id: new ObjectId(id) },
+                        {
+                            $pull: { likes: userId },
+                            $inc: { likesCount: -1 },
+                        }
+                    );
+                } else {
+                    // Add like
+                    await lessonsCollection.updateOne(
+                        { _id: new ObjectId(id) },
+                        {
+                            $addToSet: { likes: userId },
+                            $inc: { likesCount: 1 },
+                        }
+                    );
+                }
+
+                const updatedLesson = await lessonsCollection.findOne({
+                    _id: new ObjectId(id),
+                });
+
+                res.send({
+                    success: true,
+                    liked: !hasLiked,
+                    likesCount: updatedLesson.likesCount || 0,
+                });
+            } catch (err) {
+                console.error("PATCH /lessons/:id/like error:", err);
+                res.status(500).send({ message: "Failed to toggle like" });
+            }
+        });
+
+        // Get comments for a lesson
+        app.get("/lessons/:id/comments", async (req, res) => {
+            try {
+                const id = req.params.id;
+                if (!ObjectId.isValid(id)) {
+                    return res.status(400).send({ message: "Invalid lesson id" });
+                }
+
+                const comments = await commentsCollection
+                    .find({ lessonId: new ObjectId(id) })
+                    .sort({ createdAt: -1 })
+                    .toArray();
+
+                res.send({ comments });
+            } catch (err) {
+                console.error("GET /lessons/:id/comments error:", err);
+                res.status(500).send({ message: "Failed to load comments" });
+            }
+        });
+
+        // Post a comment
+        app.post("/lessons/:id/comments", verifyToken, async (req, res) => {
+            try {
+                const id = req.params.id;
+                if (!ObjectId.isValid(id)) {
+                    return res.status(400).send({ message: "Invalid lesson id" });
+                }
+
+                const { comment } = req.body;
+                if (!comment || !comment.trim()) {
+                    return res.status(400).send({ message: "Comment text is required" });
+                }
+
+                const userEmail = req.decoded.email;
+                const user = await usersCollection.findOne({ email: userEmail });
+
+                const commentDoc = {
+                    lessonId: new ObjectId(id),
+                    userName: user?.name || "Anonymous",
+                    userEmail: userEmail,
+                    userPhoto: user?.photoURL || "",
+                    text: comment.trim(),
+                    createdAt: new Date(),
+                };
+
+                const result = await commentsCollection.insertOne(commentDoc);
+
+                // Return the created comment
+                const createdComment = await commentsCollection.findOne({
+                    _id: result.insertedId,
+                });
+
+                res.send(createdComment);
+            } catch (err) {
+                console.error("POST /lessons/:id/comments error:", err);
+                res.status(500).send({ message: "Failed to post comment" });
             }
         });
 
@@ -612,7 +752,6 @@ async function run() {
                     .toArray();
 
                 res.send({ favorites: favs });
-
             } catch (err) {
                 console.error("GET /favorites error:", err);
                 res.status(500).send({ message: "Failed to load favorites" });
@@ -634,13 +773,14 @@ async function run() {
                     return res.status(403).send({ message: "forbidden" });
                 }
 
-                const result = await favoritesCollection.deleteOne({ _id: new ObjectId(id) });
+                const result = await favoritesCollection.deleteOne({
+                    _id: new ObjectId(id),
+                });
 
                 await lessonsCollection.updateOne(
                     { _id: fav.lessonId, savedCount: { $gt: 0 } },
                     { $inc: { savedCount: -1 } }
                 );
-
 
                 res.send(result);
             } catch (err) {
@@ -751,7 +891,6 @@ async function run() {
         app.get("/", (req, res) => {
             res.send("Digital Life Lessons server is running");
         });
-
         // ===== Listen =====
         app.listen(port, () => {
             console.log(`Server listening on port ${port}`);

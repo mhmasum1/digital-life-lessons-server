@@ -201,19 +201,35 @@ async function run() {
         });
 
         // admin: make admin
-        app.patch("/users/admin/:email", verifyToken, verifyAdmin, async (req, res) => {
+        app.patch("/admin/users/:id/make-admin", verifyToken, verifyAdmin, async (req, res) => {
             try {
-                const email = req.params.email;
+                const id = req.params.id;
+
+                if (!ObjectId.isValid(id)) {
+                    return res.status(400).send({ message: "Invalid user id" });
+                }
+
                 const result = await usersCollection.updateOne(
-                    { email },
-                    { $set: { role: "admin", updatedAt: new Date() } }
+                    { _id: new ObjectId(id) },
+                    {
+                        $set: {
+                            role: "admin",
+                            updatedAt: new Date()
+                        }
+                    }
                 );
+
+                if (result.matchedCount === 0) {
+                    return res.status(404).send({ message: "User not found" });
+                }
+
                 res.send(result);
             } catch (err) {
-                console.error("PATCH /users/admin/:email error:", err);
+                console.error("PATCH make-admin error:", err);
                 res.status(500).send({ message: "Failed to make admin" });
             }
         });
+
 
         // admin: delete user
         app.delete("/users/:email", verifyToken, verifyAdmin, async (req, res) => {

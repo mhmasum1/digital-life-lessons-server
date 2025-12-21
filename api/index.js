@@ -3,7 +3,14 @@ const express = require("express");
 const cors = require("cors");
 const jwt = require("jsonwebtoken");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
-const stripe = require("stripe")(process.env.STRIPE_SECRET);
+
+// Stripe init (safe)
+if (!process.env.STRIPE_SECRET) {
+    console.warn("⚠️ STRIPE_SECRET is missing in .env");
+}
+const stripe = process.env.STRIPE_SECRET
+    ? require("stripe")(process.env.STRIPE_SECRET)
+    : null;
 
 const app = express();
 
@@ -12,33 +19,40 @@ const allowedOrigin = process.env.SITE_DOMAIN;
 
 app.use(
     cors({
-        origin: allowedOrigin || true, // dev: allow all; prod: set SITE_DOMAIN
+        // dev: reflect request origin; prod: set SITE_DOMAIN (single origin)
+        origin: allowedOrigin ? [allowedOrigin] : true,
         credentials: true,
     })
 );
 app.use(express.json());
 
-// ===== MongoDB Connect (cached for serverless) =====
+// ===== MongoDB Connect (cached) =====
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.oeyfvq1.mongodb.net/?appName=Cluster0`;
 
 let client;
 let db;
+let dbPromise;
 
 async function getDB() {
     if (db) return db;
+    if (dbPromise) return dbPromise;
 
-    client = new MongoClient(uri, {
-        serverApi: {
-            version: ServerApiVersion.v1,
-            strict: true,
-            deprecationErrors: true,
-        },
-    });
+    dbPromise = (async () => {
+        client = new MongoClient(uri, {
+            serverApi: {
+                version: ServerApiVersion.v1,
+                strict: true,
+                deprecationErrors: true,
+            },
+        });
 
-    await client.connect();
-    db = client.db("digital_life_lessons_db");
-    console.log("MongoDB connected (digital_life_lessons_db)");
-    return db;
+        await client.connect();
+        db = client.db("digital_life_lessons_db");
+        console.log("MongoDB connected (digital_life_lessons_db)");
+        return db;
+    })();
+
+    return dbPromise;
 }
 
 async function getCollections() {
@@ -57,7 +71,11 @@ const verifyToken = (req, res, next) => {
     const authHeader = req.headers.authorization;
     if (!authHeader) return res.status(401).send({ message: "unauthorized" });
 
-    const token = authHeader.split(" ")[1];
+    // support: "Bearer token"
+    const parts = authHeader.split(" ");
+    const token = parts.length === 2 ? parts[1] : null;
+    if (!token) return res.status(401).send({ message: "unauthorized" });
+
     jwt.verify(token, process.env.ACCESS_TOKEN_SECRET, (err, decoded) => {
         if (err) return res.status(401).send({ message: "unauthorized" });
         req.decoded = decoded;
@@ -82,7 +100,7 @@ const verifyAdmin = async (req, res, next) => {
 
 // ===================== ROUTES =====================
 
-// Root
+// Root (✅ single only)
 app.get("/", (req, res) => {
     res.send("Digital Life Lessons server is running");
 });
@@ -93,14 +111,10 @@ app.post("/jwt", async (req, res) => {
         const { usersCollection } = await getCollections();
         const user = req.body;
 
-        if (!user?.email) {
-            return res.status(400).send({ message: "email required" });
-        }
+        if (!user?.email) return res.status(400).send({ message: "email required" });
 
         const dbUser = await usersCollection.findOne({ email: user.email });
-        if (!dbUser) {
-            return res.status(401).send({ message: "unauthorized" });
-        }
+        if (!dbUser) return res.status(401).send({ message: "unauthorized" });
 
         const token = jwt.sign(
             { email: user.email },
@@ -131,12 +145,7 @@ app.get("/admin/stats", verifyToken, verifyAdmin, async (req, res) => {
         });
         const totalReports = await reportsCollection.countDocuments();
 
-        res.send({
-            totalUsers,
-            totalLessons,
-            publicLessons,
-            totalReports,
-        });
+        res.send({ totalUsers, totalLessons, publicLessons, totalReports });
     } catch (err) {
         console.error("GET /admin/stats error:", err);
         res.status(500).send({ message: "Failed to load admin stats" });
@@ -151,9 +160,7 @@ app.post("/users", async (req, res) => {
         const { usersCollection } = await getCollections();
         const user = req.body;
 
-        if (!user?.email) {
-            return res.status(400).send({ message: "Email is required" });
-        }
+        if (!user?.email) return res.status(400).send({ message: "Email is required" });
 
         const filter = { email: user.email };
         const updateDoc = {
@@ -169,9 +176,8 @@ app.post("/users", async (req, res) => {
                 role: "user",
             },
         };
-        const options = { upsert: true };
 
-        const result = await usersCollection.updateOne(filter, updateDoc, options);
+        const result = await usersCollection.updateOne(filter, updateDoc, { upsert: true });
         res.send(result);
     } catch (err) {
         console.error("POST /users error:", err);
@@ -223,35 +229,25 @@ app.get("/users", verifyToken, verifyAdmin, async (req, res) => {
 });
 
 // admin: make admin
-app.patch(
-    "/admin/users/:id/make-admin",
-    verifyToken,
-    verifyAdmin,
-    async (req, res) => {
-        try {
-            const { usersCollection } = await getCollections();
-            const id = req.params.id;
+app.patch("/admin/users/:id/make-admin", verifyToken, verifyAdmin, async (req, res) => {
+    try {
+        const { usersCollection } = await getCollections();
+        const id = req.params.id;
 
-            if (!ObjectId.isValid(id)) {
-                return res.status(400).send({ message: "Invalid user id" });
-            }
+        if (!ObjectId.isValid(id)) return res.status(400).send({ message: "Invalid user id" });
 
-            const result = await usersCollection.updateOne(
-                { _id: new ObjectId(id) },
-                { $set: { role: "admin", updatedAt: new Date() } }
-            );
+        const result = await usersCollection.updateOne(
+            { _id: new ObjectId(id) },
+            { $set: { role: "admin", updatedAt: new Date() } }
+        );
 
-            if (result.matchedCount === 0) {
-                return res.status(404).send({ message: "User not found" });
-            }
-
-            res.send(result);
-        } catch (err) {
-            console.error("PATCH make-admin error:", err);
-            res.status(500).send({ message: "Failed to make admin" });
-        }
+        if (result.matchedCount === 0) return res.status(404).send({ message: "User not found" });
+        res.send(result);
+    } catch (err) {
+        console.error("PATCH make-admin error:", err);
+        res.status(500).send({ message: "Failed to make admin" });
     }
-);
+});
 
 // admin: delete user
 app.delete("/users/:email", verifyToken, verifyAdmin, async (req, res) => {
@@ -264,10 +260,7 @@ app.delete("/users/:email", verifyToken, verifyAdmin, async (req, res) => {
         }
 
         const result = await usersCollection.deleteOne({ email });
-
-        if (result.deletedCount === 0) {
-            return res.status(404).send({ message: "User not found" });
-        }
+        if (result.deletedCount === 0) return res.status(404).send({ message: "User not found" });
 
         res.send(result);
     } catch (err) {
@@ -285,9 +278,7 @@ app.post("/lessons", async (req, res) => {
         const lesson = req.body;
 
         if (!lesson?.title || !lesson?.shortDescription) {
-            return res
-                .status(400)
-                .send({ message: "Title and short description are required" });
+            return res.status(400).send({ message: "Title and short description are required" });
         }
 
         const doc = {
@@ -322,11 +313,7 @@ app.get("/lessons/my", async (req, res) => {
     try {
         const { lessonsCollection } = await getCollections();
         const email = req.query.email;
-        if (!email) {
-            return res
-                .status(400)
-                .send({ message: "email query parameter is required" });
-        }
+        if (!email) return res.status(400).send({ message: "email query parameter is required" });
 
         const lessons = await lessonsCollection
             .find({ creatorEmail: email, isDeleted: { $ne: true } })
@@ -346,9 +333,7 @@ app.delete("/lessons/my/:id", verifyToken, async (req, res) => {
         const { lessonsCollection } = await getCollections();
         const id = req.params.id;
 
-        if (!ObjectId.isValid(id)) {
-            return res.status(400).send({ message: "Invalid lesson id" });
-        }
+        if (!ObjectId.isValid(id)) return res.status(400).send({ message: "Invalid lesson id" });
 
         const email = req.decoded?.email;
 
@@ -357,9 +342,7 @@ app.delete("/lessons/my/:id", verifyToken, async (req, res) => {
             return res.status(404).send({ message: "Lesson not found" });
         }
 
-        if (lesson.creatorEmail !== email) {
-            return res.status(403).send({ message: "forbidden" });
-        }
+        if (lesson.creatorEmail !== email) return res.status(403).send({ message: "forbidden" });
 
         const result = await lessonsCollection.updateOne(
             { _id: new ObjectId(id) },
@@ -423,25 +406,20 @@ app.get("/lessons/most-saved", async (req, res) => {
     }
 });
 
-// Single lesson details
+// Single lesson details (keep AFTER /lessons/public etc)
 app.get("/lessons/:id", async (req, res) => {
     try {
         const { lessonsCollection } = await getCollections();
         const id = req.params.id;
 
-        if (!ObjectId.isValid(id)) {
-            return res.status(400).send({ message: "Invalid lesson id" });
-        }
+        if (!ObjectId.isValid(id)) return res.status(400).send({ message: "Invalid lesson id" });
 
         const lesson = await lessonsCollection.findOne({
             _id: new ObjectId(id),
             isDeleted: { $ne: true },
         });
 
-        if (!lesson) {
-            return res.status(404).send({ message: "Lesson not found" });
-        }
-
+        if (!lesson) return res.status(404).send({ message: "Lesson not found" });
         res.send(lesson);
     } catch (err) {
         console.error("GET /lessons/:id error:", err);
@@ -455,9 +433,7 @@ app.patch("/lessons/:id", async (req, res) => {
         const { lessonsCollection } = await getCollections();
         const id = req.params.id;
 
-        if (!ObjectId.isValid(id)) {
-            return res.status(400).send({ message: "Invalid lesson id" });
-        }
+        if (!ObjectId.isValid(id)) return res.status(400).send({ message: "Invalid lesson id" });
 
         const body = req.body || {};
         const allowedFields = [
@@ -471,7 +447,6 @@ app.patch("/lessons/:id", async (req, res) => {
         ];
 
         const updateDoc = { $set: { updatedAt: new Date() } };
-
         allowedFields.forEach((field) => {
             if (body[field] !== undefined) updateDoc.$set[field] = body[field];
         });
@@ -494,9 +469,7 @@ app.patch("/lessons/:id/like", verifyToken, async (req, res) => {
         const { lessonsCollection } = await getCollections();
         const id = req.params.id;
 
-        if (!ObjectId.isValid(id)) {
-            return res.status(400).send({ message: "Invalid lesson id" });
-        }
+        if (!ObjectId.isValid(id)) return res.status(400).send({ message: "Invalid lesson id" });
 
         const userId = req.decoded.email;
 
@@ -505,9 +478,7 @@ app.patch("/lessons/:id/like", verifyToken, async (req, res) => {
             isDeleted: { $ne: true },
         });
 
-        if (!lesson) {
-            return res.status(404).send({ message: "Lesson not found" });
-        }
+        if (!lesson) return res.status(404).send({ message: "Lesson not found" });
 
         const likes = lesson.likes || [];
         const hasLiked = likes.includes(userId);
@@ -524,9 +495,7 @@ app.patch("/lessons/:id/like", verifyToken, async (req, res) => {
             );
         }
 
-        const updatedLesson = await lessonsCollection.findOne({
-            _id: new ObjectId(id),
-        });
+        const updatedLesson = await lessonsCollection.findOne({ _id: new ObjectId(id) });
 
         res.send({
             success: true,
@@ -545,9 +514,7 @@ app.get("/lessons/:id/comments", async (req, res) => {
         const { commentsCollection } = await getCollections();
         const id = req.params.id;
 
-        if (!ObjectId.isValid(id)) {
-            return res.status(400).send({ message: "Invalid lesson id" });
-        }
+        if (!ObjectId.isValid(id)) return res.status(400).send({ message: "Invalid lesson id" });
 
         const comments = await commentsCollection
             .find({ lessonId: new ObjectId(id) })
@@ -567,9 +534,7 @@ app.post("/lessons/:id/comments", verifyToken, async (req, res) => {
         const { commentsCollection, usersCollection } = await getCollections();
         const id = req.params.id;
 
-        if (!ObjectId.isValid(id)) {
-            return res.status(400).send({ message: "Invalid lesson id" });
-        }
+        if (!ObjectId.isValid(id)) return res.status(400).send({ message: "Invalid lesson id" });
 
         const { comment } = req.body;
         if (!comment || !comment.trim()) {
@@ -582,17 +547,14 @@ app.post("/lessons/:id/comments", verifyToken, async (req, res) => {
         const commentDoc = {
             lessonId: new ObjectId(id),
             userName: user?.name || "Anonymous",
-            userEmail: userEmail,
+            userEmail,
             userPhoto: user?.photoURL || "",
             text: comment.trim(),
             createdAt: new Date(),
         };
 
         const result = await commentsCollection.insertOne(commentDoc);
-
-        const createdComment = await commentsCollection.findOne({
-            _id: result.insertedId,
-        });
+        const createdComment = await commentsCollection.findOne({ _id: result.insertedId });
 
         res.send(createdComment);
     } catch (err) {
@@ -621,9 +583,7 @@ app.delete("/lessons/:id", verifyToken, verifyAdmin, async (req, res) => {
         const { lessonsCollection } = await getCollections();
         const id = req.params.id;
 
-        if (!ObjectId.isValid(id)) {
-            return res.status(400).send({ message: "Invalid lesson id" });
-        }
+        if (!ObjectId.isValid(id)) return res.status(400).send({ message: "Invalid lesson id" });
 
         const result = await lessonsCollection.updateOne(
             { _id: new ObjectId(id) },
@@ -693,10 +653,7 @@ app.post("/reports", verifyToken, async (req, res) => {
 app.get("/reports", verifyToken, verifyAdmin, async (req, res) => {
     try {
         const { reportsCollection } = await getCollections();
-        const reports = await reportsCollection
-            .find()
-            .sort({ createdAt: -1 })
-            .toArray();
+        const reports = await reportsCollection.find().sort({ createdAt: -1 }).toArray();
         res.send(reports);
     } catch (err) {
         console.error("GET /reports error:", err);
@@ -709,9 +666,7 @@ app.patch("/reports/:id/resolve", verifyToken, verifyAdmin, async (req, res) => 
         const { reportsCollection } = await getCollections();
         const id = req.params.id;
 
-        if (!ObjectId.isValid(id)) {
-            return res.status(400).send({ message: "Invalid report id" });
-        }
+        if (!ObjectId.isValid(id)) return res.status(400).send({ message: "Invalid report id" });
 
         const result = await reportsCollection.updateOne(
             { _id: new ObjectId(id) },
@@ -743,9 +698,7 @@ app.post("/favorites", verifyToken, async (req, res) => {
             userEmail: email,
         });
 
-        if (existing) {
-            return res.status(400).send({ message: "Already in favorites" });
-        }
+        if (existing) return res.status(400).send({ message: "Already in favorites" });
 
         const favDoc = {
             lessonId: lessonObjectId,
@@ -755,10 +708,7 @@ app.post("/favorites", verifyToken, async (req, res) => {
 
         const result = await favoritesCollection.insertOne(favDoc);
 
-        await lessonsCollection.updateOne(
-            { _id: lessonObjectId },
-            { $inc: { savedCount: 1 } }
-        );
+        await lessonsCollection.updateOne({ _id: lessonObjectId }, { $inc: { savedCount: 1 } });
 
         res.send(result);
     } catch (err) {
@@ -802,20 +752,14 @@ app.delete("/favorites/:id", verifyToken, async (req, res) => {
         const { favoritesCollection, lessonsCollection } = await getCollections();
         const id = req.params.id;
 
-        if (!ObjectId.isValid(id)) {
-            return res.status(400).send({ message: "Invalid favorite id" });
-        }
+        if (!ObjectId.isValid(id)) return res.status(400).send({ message: "Invalid favorite id" });
 
         const email = req.decoded.email;
 
         const fav = await favoritesCollection.findOne({ _id: new ObjectId(id) });
-        if (!fav || fav.userEmail !== email) {
-            return res.status(403).send({ message: "forbidden" });
-        }
+        if (!fav || fav.userEmail !== email) return res.status(403).send({ message: "forbidden" });
 
-        const result = await favoritesCollection.deleteOne({
-            _id: new ObjectId(id),
-        });
+        const result = await favoritesCollection.deleteOne({ _id: new ObjectId(id) });
 
         await lessonsCollection.updateOne(
             { _id: fav.lessonId, savedCount: { $gt: 0 } },
@@ -832,6 +776,8 @@ app.delete("/favorites/:id", verifyToken, async (req, res) => {
 // ===================== STRIPE =====================
 app.post("/create-checkout-session", async (req, res) => {
     try {
+        if (!stripe) return res.status(500).send({ message: "Stripe not configured" });
+
         const { usersCollection } = await getCollections();
         const { email, plan } = req.body;
 
@@ -844,6 +790,7 @@ app.post("/create-checkout-session", async (req, res) => {
             });
         }
 
+        // 1500 BDT => smallest unit: 1500*100 (BDT has subunit)
         const amount = 1500 * 100;
 
         const session = await stripe.checkout.sessions.create({
@@ -855,9 +802,7 @@ app.post("/create-checkout-session", async (req, res) => {
                     price_data: {
                         currency: "bdt",
                         unit_amount: amount,
-                        product_data: {
-                            name: "Digital Life Lessons Premium – Lifetime",
-                        },
+                        product_data: { name: "Digital Life Lessons Premium – Lifetime" },
                     },
                     quantity: 1,
                 },
@@ -876,6 +821,8 @@ app.post("/create-checkout-session", async (req, res) => {
 
 app.patch("/payment-success", async (req, res) => {
     try {
+        if (!stripe) return res.status(500).send({ message: "Stripe not configured" });
+
         const { usersCollection } = await getCollections();
         const sessionId = req.query.session_id;
 
@@ -896,8 +843,7 @@ app.patch("/payment-success", async (req, res) => {
                 $setOnInsert: { createdAt: new Date() },
             };
 
-            const options = { upsert: true };
-            const result = await usersCollection.updateOne(filter, updateDoc, options);
+            const result = await usersCollection.updateOne(filter, updateDoc, { upsert: true });
 
             return res.send({
                 success: true,
@@ -919,11 +865,11 @@ app.patch("/payment-success", async (req, res) => {
     }
 });
 
-
-app.get("/", (req, res) => {
-    res.send("Digital Life Lessons server is running");
-});
-
-// IMPORTANT: Vercel/serverless expects app export
+// ===================== EXPORT + LOCAL LISTEN =====================
 module.exports = app;
 
+//  Local run support: node api/index.js / nodemon api/index.js
+if (require.main === module) {
+    const port = process.env.PORT || 5000;
+    app.listen(port, () => console.log(`Server running on port ${port}`));
+}

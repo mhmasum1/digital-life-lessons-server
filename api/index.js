@@ -156,34 +156,36 @@ app.get("/admin/stats", verifyToken, verifyAdmin, async (req, res) => {
 
 // create / upsert user
 app.post("/users", async (req, res) => {
-    try {
-        const { usersCollection } = await getCollections();
-        const user = req.body;
+  try {
+    const { usersCollection } = await getCollections();
+    const user = req.body;
 
-        if (!user?.email) return res.status(400).send({ message: "Email is required" });
+    if (!user?.email) return res.status(400).send({ message: "Email is required" });
 
-        const filter = { email: user.email };
-        const updateDoc = {
-            $set: {
-                email: user.email,
-                name: user.name || user.displayName || "",
-                photoURL: user.photoURL || "",
-                isPremium: user.isPremium || false,
-                updatedAt: new Date(),
-            },
-            $setOnInsert: {
-                createdAt: new Date(),
-                role: "user",
-            },
-        };
+    const filter = { email: user.email };
 
-        const result = await usersCollection.updateOne(filter, updateDoc, { upsert: true });
-        res.send(result);
-    } catch (err) {
-        console.error("POST /users error:", err);
-        res.status(500).send({ message: "Failed to save user" });
-    }
+    const updateDoc = {
+      $set: {
+        email: user.email,
+        name: user.name || user.displayName || "",
+        photoURL: user.photoURL || "",
+        updatedAt: new Date(),
+      },
+      $setOnInsert: {
+        createdAt: new Date(),
+        role: "user",
+        isPremium: false,
+      },
+    };
+
+    const result = await usersCollection.updateOne(filter, updateDoc, { upsert: true });
+    res.send(result);
+  } catch (err) {
+    console.error("POST /users error:", err);
+    res.status(500).send({ message: "Failed to save user" });
+  }
 });
+
 
 // single user by email
 app.get("/users/:email", async (req, res) => {

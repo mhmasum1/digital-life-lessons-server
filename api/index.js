@@ -131,26 +131,28 @@ app.post("/jwt", async (req, res) => {
 
 // ===================== ADMIN STATS =====================
 app.get("/admin/stats", verifyToken, verifyAdmin, async (req, res) => {
-    try {
-        const { usersCollection, lessonsCollection, reportsCollection } =
-            await getCollections();
+  try {
+    const { usersCollection, lessonsCollection, reportsCollection } =
+      await getCollections();
 
-        const totalUsers = await usersCollection.countDocuments();
-        const totalLessons = await lessonsCollection.countDocuments({
-            isDeleted: { $ne: true },
-        });
-        const publicLessons = await lessonsCollection.countDocuments({
-            visibility: "public",
-            isDeleted: { $ne: true },
-        });
-        const totalReports = await reportsCollection.countDocuments();
+    const [totalUsers, totalLessons, publicLessons, totalReports] =
+      await Promise.all([
+        usersCollection.countDocuments(),
+        lessonsCollection.countDocuments({ isDeleted: { $ne: true } }),
+        lessonsCollection.countDocuments({
+          visibility: "public",
+          isDeleted: { $ne: true },
+        }),
+        reportsCollection.countDocuments(),
+      ]);
 
-        res.send({ totalUsers, totalLessons, publicLessons, totalReports });
-    } catch (err) {
-        console.error("GET /admin/stats error:", err);
-        res.status(500).send({ message: "Failed to load admin stats" });
-    }
+    res.send({ totalUsers, totalLessons, publicLessons, totalReports });
+  } catch (err) {
+    console.error("GET /admin/stats error:", err);
+    res.status(500).send({ message: "Failed to load admin stats" });
+  }
 });
+
 
 // ===================== USERS APIs =====================
 

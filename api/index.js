@@ -361,20 +361,63 @@ app.delete("/lessons/my/:id", verifyToken, async (req, res) => {
 });
 
 // Public lessons
+// Public lessons with search/filter/sort + pagination
 app.get("/lessons/public", async (req, res) => {
-    try {
-        const { lessonsCollection } = await getCollections();
-        const lessons = await lessonsCollection
-            .find({ visibility: "public", isDeleted: { $ne: true } })
-            .sort({ createdAt: -1 })
-            .toArray();
+  try {
+    const { lessonsCollection } = await getCollections();
 
-        res.send({ lessons });
-    } catch (err) {
-        console.error("GET /lessons/public error:", err);
-        res.status(500).send({ message: "Failed to load public lessons" });
+    const {
+      search = "",
+      category = "",
+      tone = "",
+      sort = "newest",
+      page = "1",
+      limit = "9",
+    } = req.query;
+
+    const pageNum = Math.max(1, parseInt(page, 10) || 1);
+    const limitNum = Math.min(50, Math.max(1, parseInt(limit, 10) || 9));
+    const skip = (pageNum - 1) * limitNum;
+
+    const filter = {
+      visibility: "public",
+      isDeleted: { $ne: true },
+    };
+
+    if (category) filter.category = category;
+    if (tone) filter.emotionalTone = tone;
+
+    if (search.trim()) {
+      // title + shortDescription search
+      filter.$or = [
+        { title: { $regex: search.trim(), $options: "i" } },
+        { shortDescription: { $regex: search.trim(), $options: "i" } },
+      ];
     }
+
+    const sortDoc =
+      sort === "mostSaved" ? { savedCount: -1, createdAt: -1 } : { createdAt: -1 };
+
+    const [lessons, total] = await Promise.all([
+      lessonsCollection.find(filter).sort(sortDoc).skip(skip).limit(limitNum).toArray(),
+      lessonsCollection.countDocuments(filter),
+    ]);
+
+    res.send({
+      lessons,
+      pagination: {
+        total,
+        page: pageNum,
+        limit: limitNum,
+        totalPages: Math.ceil(total / limitNum),
+      },
+    });
+  } catch (err) {
+    console.error("GET /lessons/public error:", err);
+    res.status(500).send({ message: "Failed to load public lessons" });
+  }
 });
+
 
 // Featured lessons
 app.get("/lessons/featured", async (req, res) => {

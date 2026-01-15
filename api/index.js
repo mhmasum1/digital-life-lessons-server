@@ -600,6 +600,67 @@ app.delete("/lessons/:id", verifyToken, verifyAdmin, async (req, res) => {
         res.status(500).send({ message: "Failed to delete lesson" });
     }
 });
+app.patch("/admin/lessons/:id/toggle-visibility", verifyToken, verifyAdmin, async (req, res) => {
+  try {
+    const { lessonsCollection } = await getCollections();
+    const id = req.params.id;
+    if (!ObjectId.isValid(id)) return res.status(400).send({ message: "Invalid lesson id" });
+
+    const lesson = await lessonsCollection.findOne({ _id: new ObjectId(id) });
+    if (!lesson) return res.status(404).send({ message: "Lesson not found" });
+
+    const nextVisibility = lesson.visibility === "public" ? "private" : "public";
+
+    await lessonsCollection.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: { visibility: nextVisibility, updatedAt: new Date() } }
+    );
+
+    res.send({ success: true, visibility: nextVisibility });
+  } catch (err) {
+    console.error("toggle-visibility error:", err);
+    res.status(500).send({ message: "Failed to toggle visibility" });
+  }
+});
+
+app.patch("/admin/lessons/:id/featured", verifyToken, verifyAdmin, async (req, res) => {
+  try {
+    const { lessonsCollection } = await getCollections();
+    const id = req.params.id;
+    if (!ObjectId.isValid(id)) return res.status(400).send({ message: "Invalid lesson id" });
+
+    const { featured } = req.body; 
+    await lessonsCollection.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: { isFeatured: !!featured, updatedAt: new Date() } }
+    );
+
+    res.send({ success: true });
+  } catch (err) {
+    console.error("featured error:", err);
+    res.status(500).send({ message: "Failed to update featured" });
+  }
+});
+
+app.patch("/admin/lessons/:id/reviewed", verifyToken, verifyAdmin, async (req, res) => {
+  try {
+    const { lessonsCollection } = await getCollections();
+    const id = req.params.id;
+    if (!ObjectId.isValid(id)) return res.status(400).send({ message: "Invalid lesson id" });
+
+    const { reviewed } = req.body; // true/false
+    await lessonsCollection.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: { isReviewed: !!reviewed, updatedAt: new Date() } }
+    );
+
+    res.send({ success: true });
+  } catch (err) {
+    console.error("reviewed error:", err);
+    res.status(500).send({ message: "Failed to mark reviewed" });
+  }
+});
+
 
 // ===================== STATS APIs =====================
 app.get("/stats/top-contributors", async (req, res) => {

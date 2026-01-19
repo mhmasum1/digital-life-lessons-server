@@ -786,7 +786,56 @@ app.patch("/reports/:id/resolve", verifyToken, verifyAdmin, async (req, res) => 
         console.error("PATCH /reports/:id/resolve error:", err);
         res.status(500).send({ message: "Failed to resolve report" });
     }
+});// DELETE report (Ignore)
+app.delete("/reports/:id", verifyToken, verifyAdmin, async (req, res) => {
+  try {
+    const { reportsCollection } = await getCollections();
+    const id = req.params.id;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).send({ message: "Invalid report id" });
+    }
+
+    const result = await reportsCollection.deleteOne({
+      _id: new ObjectId(id),
+    });
+
+    if (result.deletedCount === 0) {
+      return res.status(404).send({ message: "Report not found" });
+    }
+
+    res.send({ success: true });
+  } catch (err) {
+    console.error("Delete report error:", err);
+    res.status(500).send({ message: "Failed to ignore report" });
+  }
 });
+app.delete("/lessons/:id", verifyToken, verifyAdmin, async (req, res) => {
+  try {
+    const { lessonsCollection } = await getCollections();
+    const id = req.params.id;
+
+    if (!ObjectId.isValid(id)) {
+      return res.status(400).send({ message: "Invalid lesson id" });
+    }
+
+    const result = await lessonsCollection.deleteOne({
+      _id: new ObjectId(id),
+    });
+
+    if (result.deletedCount === 0) {
+      return res.status(404).send({ message: "Lesson not found" });
+    }
+
+    res.send({ success: true });
+  } catch (err) {
+    console.error("Delete lesson error:", err);
+    res.status(500).send({ message: "Failed to delete lesson" });
+  }
+});
+
+
+
 
 // ===================== FAVORITES APIs =====================
 app.post("/favorites", verifyToken, async (req, res) => {

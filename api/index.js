@@ -8,9 +8,7 @@ const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 if (!process.env.STRIPE_SECRET) {
     console.warn("⚠️ STRIPE_SECRET is missing in .env");
 }
-const stripe = process.env.STRIPE_SECRET
-    ? require("stripe")(process.env.STRIPE_SECRET)
-    : null;
+const stripe = process.env.STRIPE_SECRET ? require("stripe")(process.env.STRIPE_SECRET) : null;
 
 const app = express();
 
@@ -83,6 +81,24 @@ const verifyToken = (req, res, next) => {
     });
 };
 
+/**
+ * ✅ MUST: optional token (public routes can still check premium if logged in)
+ * - if token missing/invalid: just continue (treated as non-premium)
+ */
+const optionalVerifyToken = (req, res, next) => {
+    const authHeader = req.headers.authorization;
+    if (!authHeader) return next();
+
+    const parts = authHeader.split(" ");
+    const token = parts.length === 2 ? parts[1] : null;
+    if (!token) return next();
+
+    jwt.verify(token, process.env.ACCESS_TOKEN_SECRET, (err, decoded) => {
+        if (!err && decoded?.email) req.decoded = decoded;
+        next();
+    });
+};
+
 const verifyAdmin = async (req, res, next) => {
     try {
         const { usersCollection } = await getCollections();
@@ -116,11 +132,7 @@ app.post("/jwt", async (req, res) => {
         const dbUser = await usersCollection.findOne({ email: user.email });
         if (!dbUser) return res.status(401).send({ message: "unauthorized" });
 
-        const token = jwt.sign(
-            { email: user.email },
-            process.env.ACCESS_TOKEN_SECRET,
-            { expiresIn: "7d" }
-        );
+        const token = jwt.sign({ email: user.email }, process.env.ACCESS_TOKEN_SECRET, { expiresIn: "7d" });
 
         res.send({ token });
     } catch (err) {
@@ -132,13 +144,10 @@ app.post("/jwt", async (req, res) => {
 // ===================== ADMIN STATS =====================
 app.get("/admin/stats", verifyToken, verifyAdmin, async (req, res) => {
     try {
-        const { usersCollection, lessonsCollection, reportsCollection } =
-            await getCollections();
+        const { usersCollection, lessonsCollection, reportsCollection } = await getCollections();
 
         const totalUsers = await usersCollection.countDocuments();
-        const totalLessons = await lessonsCollection.countDocuments({
-            isDeleted: { $ne: true },
-        });
+        const totalLessons = await lessonsCollection.countDocuments({ isDeleted: { $ne: true } });
         const publicLessons = await lessonsCollection.countDocuments({
             visibility: "public",
             isDeleted: { $ne: true },
@@ -356,15 +365,28 @@ app.delete("/lessons/my/:id", verifyToken, async (req, res) => {
     }
 });
 
-// Public lessons
-app.get("/lessons/public", async (req, res) => {
+/**
+ * ✅ MUST: Public lessons now respect premium access
+ * - Non premium users will NOT receive accessLevel:"premium"
+ * - Premium users (valid token + isPremium:true) will receive all public lessons
+ */
+app.get("/lessons/public", optionalVerifyToken, async (req, res) => {
     try {
-        const { lessonsCollection } = await getCollections();
-        const lessons = await lessonsCollection
-            .find({ visibility: "public", isDeleted: { $ne: true } })
-            .sort({ createdAt: -1 })
-            .toArray();
+        const { lessonsCollection, usersCollection } = await getCollections();
 
+        let isPremium = false;
+        if (req.decoded?.email) {
+            const u = await usersCollection.findOne(
+                { email: req.decoded.email },
+                { projection: { isPremium: 1 } }
+            );
+            isPremium = !!u?.isPremium;
+        }
+
+        const filter = { visibility: "public", isDeleted: { $ne: true } };
+        if (!isPremium) filter.accessLevel = { $ne: "premium" };
+
+        const lessons = await lessonsCollection.find(filter).sort({ createdAt: -1 }).toArray();
         res.send({ lessons });
     } catch (err) {
         console.error("GET /lessons/public error:", err);
@@ -372,7 +394,7 @@ app.get("/lessons/public", async (req, res) => {
     }
 });
 
-// Featured lessons
+// Featured lessons (kept same; if you want, can also apply same filter)
 app.get("/lessons/featured", async (req, res) => {
     try {
         const { lessonsCollection } = await getCollections();
@@ -389,7 +411,7 @@ app.get("/lessons/featured", async (req, res) => {
     }
 });
 
-// Most saved lessons
+// Most saved lessons (kept same; if you want, can also apply same filter)
 app.get("/lessons/most-saved", async (req, res) => {
     try {
         const { lessonsCollection } = await getCollections();
@@ -406,10 +428,13 @@ app.get("/lessons/most-saved", async (req, res) => {
     }
 });
 
-// Single lesson details (keep AFTER /lessons/public etc)
-app.get("/lessons/:id", async (req, res) => {
+/**
+ * ✅ MUST: Single lesson endpoint premium-protected
+ * - If lesson.accessLevel === "premium" => require premium user
+ */
+app.get("/lessons/:id", optionalVerifyToken, async (req, res) => {
     try {
-        const { lessonsCollection } = await getCollections();
+        const { lessonsCollection, usersCollection } = await getCollections();
         const id = req.params.id;
 
         if (!ObjectId.isValid(id)) return res.status(400).send({ message: "Invalid lesson id" });
@@ -420,6 +445,22 @@ app.get("/lessons/:id", async (req, res) => {
         });
 
         if (!lesson) return res.status(404).send({ message: "Lesson not found" });
+
+        if (lesson.accessLevel === "premium") {
+            let isPremium = false;
+            if (req.decoded?.email) {
+                const u = await usersCollection.findOne(
+                    { email: req.decoded.email },
+                    { projection: { isPremium: 1 } }
+                );
+                isPremium = !!u?.isPremium;
+            }
+
+            if (!isPremium) {
+                return res.status(403).send({ message: "Premium access required" });
+            }
+        }
+
         res.send(lesson);
     } catch (err) {
         console.error("GET /lessons/:id error:", err);
@@ -436,25 +477,14 @@ app.patch("/lessons/:id", async (req, res) => {
         if (!ObjectId.isValid(id)) return res.status(400).send({ message: "Invalid lesson id" });
 
         const body = req.body || {};
-        const allowedFields = [
-            "title",
-            "shortDescription",
-            "details",
-            "category",
-            "emotionalTone",
-            "accessLevel",
-            "visibility",
-        ];
+        const allowedFields = ["title", "shortDescription", "details", "category", "emotionalTone", "accessLevel", "visibility"];
 
         const updateDoc = { $set: { updatedAt: new Date() } };
         allowedFields.forEach((field) => {
             if (body[field] !== undefined) updateDoc.$set[field] = body[field];
         });
 
-        const result = await lessonsCollection.updateOne(
-            { _id: new ObjectId(id) },
-            updateDoc
-        );
+        const result = await lessonsCollection.updateOne({ _id: new ObjectId(id) }, updateDoc);
 
         res.send(result);
     } catch (err) {
@@ -567,10 +597,7 @@ app.post("/lessons/:id/comments", verifyToken, async (req, res) => {
 app.get("/lessons", verifyToken, verifyAdmin, async (req, res) => {
     try {
         const { lessonsCollection } = await getCollections();
-        const lessons = await lessonsCollection
-            .find({ isDeleted: { $ne: true } })
-            .sort({ createdAt: -1 })
-            .toArray();
+        const lessons = await lessonsCollection.find({ isDeleted: { $ne: true } }).sort({ createdAt: -1 }).toArray();
         res.send(lessons);
     } catch (err) {
         console.error("GET /lessons (admin) error:", err);

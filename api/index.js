@@ -4,16 +4,13 @@ const cors = require("cors");
 const jwt = require("jsonwebtoken");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
-// Stripe init (safe)
-if (!process.env.STRIPE_SECRET) {
-    console.warn("⚠️ STRIPE_SECRET is missing in .env");
-}
+if (!process.env.STRIPE_SECRET) console.warn("⚠️ STRIPE_SECRET is missing in .env");
 const stripe = process.env.STRIPE_SECRET ? require("stripe")(process.env.STRIPE_SECRET) : null;
 
 const app = express();
 
 // ===== Middleware =====
-const allowedOrigin = process.env.SITE_DOMAIN; // e.g. https://yourdomain.com (no trailing slash)
+const allowedOrigin = process.env.SITE_DOMAIN;
 
 app.use(
     cors({
@@ -23,22 +20,19 @@ app.use(
 );
 app.use(express.json());
 
-// ===================== Helpers =====================
-const asyncHandler = (fn) => (req, res, next) =>
-    Promise.resolve(fn(req, res, next)).catch(next);
+// ===== Helpers =====
+const asyncHandler = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
 const mustObjectId = (id) => {
     if (!ObjectId.isValid(id)) return null;
     return new ObjectId(id);
 };
 
-// ===================== MongoDB Connect (Vercel friendly global cache) =====================
+// ===== Mongo (serverless cache) =====
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.oeyfvq1.mongodb.net/?appName=Cluster0`;
 
-// Global cache (important for serverless)
 const globalCache =
-    globalThis.__mongoCache ||
-    (globalThis.__mongoCache = { client: null, db: null, promise: null });
+    globalThis.__mongoCache || (globalThis.__mongoCache = { client: null, db: null, promise: null });
 
 async function getDB() {
     if (globalCache.db) return globalCache.db;
@@ -46,11 +40,7 @@ async function getDB() {
 
     globalCache.promise = (async () => {
         const client = new MongoClient(uri, {
-            serverApi: {
-                version: ServerApiVersion.v1,
-                strict: true,
-                deprecationErrors: true,
-            },
+            serverApi: { version: ServerApiVersion.v1, strict: true, deprecationErrors: true },
         });
 
         await client.connect();
@@ -77,7 +67,7 @@ async function getCollections() {
     };
 }
 
-// ===================== AUTH / JWT =====================
+// ===== Auth =====
 const verifyToken = (req, res, next) => {
     const authHeader = req.headers.authorization;
     if (!authHeader) return res.status(401).send({ message: "unauthorized" });
@@ -93,7 +83,7 @@ const verifyToken = (req, res, next) => {
     });
 };
 
-// ✅ MUST: optional token for public routes (premium check if logged in)
+// optional token (public endpoints এ token থাকলে decoded বসাবে)
 const optionalVerifyToken = (req, res, next) => {
     const authHeader = req.headers.authorization;
     if (!authHeader) return next();
@@ -116,7 +106,6 @@ const verifyAdmin = asyncHandler(async (req, res, next) => {
     next();
 });
 
-// helper: check premium status quickly
 const getIsPremium = async (email) => {
     if (!email) return false;
     const { usersCollection } = await getCollections();
@@ -124,12 +113,8 @@ const getIsPremium = async (email) => {
     return !!u?.isPremium;
 };
 
-// ===================== ROUTES =====================
-
-// Root
-app.get("/", (req, res) => {
-    res.send("Digital Life Lessons server is running");
-});
+// ===== Routes =====
+app.get("/", (req, res) => res.send("Digital Life Lessons server is running"));
 
 // JWT
 app.post(
@@ -137,21 +122,17 @@ app.post(
     asyncHandler(async (req, res) => {
         const { usersCollection } = await getCollections();
         const user = req.body;
-
         if (!user?.email) return res.status(400).send({ message: "email required" });
 
         const dbUser = await usersCollection.findOne({ email: user.email });
         if (!dbUser) return res.status(401).send({ message: "unauthorized" });
 
-        const token = jwt.sign({ email: user.email }, process.env.ACCESS_TOKEN_SECRET, {
-            expiresIn: "7d",
-        });
-
+        const token = jwt.sign({ email: user.email }, process.env.ACCESS_TOKEN_SECRET, { expiresIn: "7d" });
         res.send({ token });
     })
 );
 
-// ===================== ADMIN STATS =====================
+// Admin stats
 app.get(
     "/admin/stats",
     verifyToken,
@@ -170,19 +151,15 @@ app.get(
     })
 );
 
-// ===================== USERS APIs =====================
-
-// create / upsert user (✅ do NOT allow client to set isPremium)
+// ===== Users =====
 app.post(
     "/users",
     asyncHandler(async (req, res) => {
         const { usersCollection } = await getCollections();
         const user = req.body;
-
         if (!user?.email) return res.status(400).send({ message: "Email is required" });
 
         const filter = { email: user.email };
-
         const updateDoc = {
             $set: {
                 email: user.email,
@@ -202,18 +179,15 @@ app.post(
     })
 );
 
-// single user by email
 app.get(
     "/users/:email",
     asyncHandler(async (req, res) => {
         const { usersCollection } = await getCollections();
-        const email = req.params.email;
-        const user = await usersCollection.findOne({ email });
+        const user = await usersCollection.findOne({ email: req.params.email });
         res.send(user || {});
     })
 );
 
-// check admin by email
 app.get(
     "/users/admin/:email",
     verifyToken,
@@ -228,7 +202,6 @@ app.get(
     })
 );
 
-// admin: get all users
 app.get(
     "/users",
     verifyToken,
@@ -240,7 +213,6 @@ app.get(
     })
 );
 
-// admin: make admin
 app.patch(
     "/admin/users/:id/make-admin",
     verifyToken,
@@ -250,17 +222,13 @@ app.patch(
         const oid = mustObjectId(req.params.id);
         if (!oid) return res.status(400).send({ message: "Invalid user id" });
 
-        const result = await usersCollection.updateOne(
-            { _id: oid },
-            { $set: { role: "admin", updatedAt: new Date() } }
-        );
-
+        const result = await usersCollection.updateOne({ _id: oid }, { $set: { role: "admin", updatedAt: new Date() } });
         if (result.matchedCount === 0) return res.status(404).send({ message: "User not found" });
+
         res.send(result);
     })
 );
 
-// admin: delete user
 app.delete(
     "/users/:email",
     verifyToken,
@@ -269,8 +237,7 @@ app.delete(
         const { usersCollection } = await getCollections();
         const email = req.params.email;
 
-        if (req.decoded.email === email)
-            return res.status(400).send({ message: "You cannot delete yourself" });
+        if (req.decoded.email === email) return res.status(400).send({ message: "You cannot delete yourself" });
 
         const result = await usersCollection.deleteOne({ email });
         if (result.deletedCount === 0) return res.status(404).send({ message: "User not found" });
@@ -279,9 +246,7 @@ app.delete(
     })
 );
 
-// ===================== LESSONS APIs =====================
-
-// Add new lesson
+// ===== Lessons =====
 app.post(
     "/lessons",
     asyncHandler(async (req, res) => {
@@ -298,8 +263,8 @@ app.post(
             details: lesson.details || "",
             category: lesson.category || "Self-Growth",
             emotionalTone: lesson.emotionalTone || "Reflective",
-            accessLevel: lesson.accessLevel || "free", // "free" | "premium"
-            visibility: lesson.visibility || "public", // "public" | "private"
+            accessLevel: lesson.accessLevel || "free",
+            visibility: lesson.visibility || "public",
             creatorEmail: lesson.creatorEmail || "",
             creatorName: lesson.creatorName || "",
             creatorPhotoURL: lesson.creatorPhotoURL || "",
@@ -316,7 +281,6 @@ app.post(
     })
 );
 
-// My lessons
 app.get(
     "/lessons/my",
     asyncHandler(async (req, res) => {
@@ -324,16 +288,11 @@ app.get(
         const email = req.query.email;
         if (!email) return res.status(400).send({ message: "email query parameter is required" });
 
-        const lessons = await lessonsCollection
-            .find({ creatorEmail: email, isDeleted: { $ne: true } })
-            .sort({ createdAt: -1 })
-            .toArray();
-
+        const lessons = await lessonsCollection.find({ creatorEmail: email, isDeleted: { $ne: true } }).sort({ createdAt: -1 }).toArray();
         res.send(lessons);
     })
 );
 
-// User: delete my lesson (soft delete)
 app.delete(
     "/lessons/my/:id",
     verifyToken,
@@ -345,38 +304,26 @@ app.delete(
         const email = req.decoded?.email;
         const lesson = await lessonsCollection.findOne({ _id: oid });
 
-        if (!lesson || lesson?.isDeleted === true)
-            return res.status(404).send({ message: "Lesson not found" });
+        if (!lesson || lesson.isDeleted === true) return res.status(404).send({ message: "Lesson not found" });
         if (lesson.creatorEmail !== email) return res.status(403).send({ message: "forbidden" });
 
-        const result = await lessonsCollection.updateOne(
-            { _id: oid },
-            { $set: { isDeleted: true, updatedAt: new Date() } }
-        );
-
+        const result = await lessonsCollection.updateOne({ _id: oid }, { $set: { isDeleted: true, updatedAt: new Date() } });
         res.send(result);
     })
 );
 
-// ✅ Public lessons with search/filter/sort + pagination + PREMIUM GUARD
+// ✅ Public list: show ALL public lessons (free + premium)
 app.get(
     "/lessons/public",
-    optionalVerifyToken,
     asyncHandler(async (req, res) => {
         const { lessonsCollection } = await getCollections();
-        const { search = "", category = "", tone = "", sort = "newest", page = "1", limit = "9" } =
-            req.query;
+        const { search = "", category = "", tone = "", sort = "newest", page = "1", limit = "9" } = req.query;
 
         const pageNum = Math.max(1, parseInt(page, 10) || 1);
         const limitNum = Math.min(50, Math.max(1, parseInt(limit, 10) || 9));
         const skip = (pageNum - 1) * limitNum;
 
-        const isPremium = await getIsPremium(req.decoded?.email);
-
         const filter = { visibility: "public", isDeleted: { $ne: true } };
-
-        // ✅ Free user => premium lessons hide
-        if (!isPremium) filter.accessLevel = { $ne: "premium" };
 
         if (category) filter.category = category;
         if (tone) filter.emotionalTone = tone;
@@ -388,8 +335,7 @@ app.get(
             ];
         }
 
-        const sortDoc =
-            sort === "mostSaved" ? { savedCount: -1, createdAt: -1 } : { createdAt: -1 };
+        const sortDoc = sort === "mostSaved" ? { savedCount: -1, createdAt: -1 } : { createdAt: -1 };
 
         const [lessons, total] = await Promise.all([
             lessonsCollection.find(filter).sort(sortDoc).skip(skip).limit(limitNum).toArray(),
@@ -398,52 +344,43 @@ app.get(
 
         res.send({
             lessons,
-            pagination: {
-                total,
-                page: pageNum,
-                limit: limitNum,
-                totalPages: Math.ceil(total / limitNum),
-            },
+            pagination: { total, page: pageNum, limit: limitNum, totalPages: Math.ceil(total / limitNum) },
         });
     })
 );
 
-// Featured lessons (premium guard optional, but we keep consistent)
+// Featured (show all public)
 app.get(
     "/lessons/featured",
-    optionalVerifyToken,
     asyncHandler(async (req, res) => {
         const { lessonsCollection } = await getCollections();
-        const isPremium = await getIsPremium(req.decoded?.email);
-
-        const filter = { visibility: "public", isDeleted: { $ne: true } };
-        if (!isPremium) filter.accessLevel = { $ne: "premium" };
-
-        const lessons = await lessonsCollection.find(filter).sort({ createdAt: -1 }).limit(6).toArray();
+        const lessons = await lessonsCollection
+            .find({ visibility: "public", isDeleted: { $ne: true } })
+            .sort({ createdAt: -1 })
+            .limit(6)
+            .toArray();
         res.send({ lessons });
     })
 );
 
-// Most saved lessons (premium guard optional, but we keep consistent)
+// Most-saved (show all public)
 app.get(
     "/lessons/most-saved",
-    optionalVerifyToken,
     asyncHandler(async (req, res) => {
         const { lessonsCollection } = await getCollections();
-        const isPremium = await getIsPremium(req.decoded?.email);
-
-        const filter = { visibility: "public", isDeleted: { $ne: true } };
-        if (!isPremium) filter.accessLevel = { $ne: "premium" };
-
-        const lessons = await lessonsCollection.find(filter).sort({ savedCount: -1 }).limit(6).toArray();
+        const lessons = await lessonsCollection
+            .find({ visibility: "public", isDeleted: { $ne: true } })
+            .sort({ savedCount: -1 })
+            .limit(6)
+            .toArray();
         res.send({ lessons });
     })
 );
 
-// ✅ Single lesson details premium-protected
+// ✅ Details: login required + premium guard
 app.get(
     "/lessons/:id",
-    optionalVerifyToken,
+    verifyToken,
     asyncHandler(async (req, res) => {
         const { lessonsCollection } = await getCollections();
         const oid = mustObjectId(req.params.id);
@@ -470,15 +407,7 @@ app.patch(
         if (!oid) return res.status(400).send({ message: "Invalid lesson id" });
 
         const body = req.body || {};
-        const allowedFields = [
-            "title",
-            "shortDescription",
-            "details",
-            "category",
-            "emotionalTone",
-            "accessLevel",
-            "visibility",
-        ];
+        const allowedFields = ["title", "shortDescription", "details", "category", "emotionalTone", "accessLevel", "visibility"];
 
         const updateDoc = { $set: { updatedAt: new Date() } };
         for (const f of allowedFields) if (body[f] !== undefined) updateDoc.$set[f] = body[f];
@@ -488,7 +417,7 @@ app.patch(
     })
 );
 
-// ========== LIKE SYSTEM ==========
+// Like
 app.patch(
     "/lessons/:id/like",
     verifyToken,
@@ -498,7 +427,6 @@ app.patch(
         if (!oid) return res.status(400).send({ message: "Invalid lesson id" });
 
         const userId = req.decoded.email;
-
         const lesson = await lessonsCollection.findOne({ _id: oid, isDeleted: { $ne: true } });
         if (!lesson) return res.status(404).send({ message: "Lesson not found" });
 
@@ -506,15 +434,9 @@ app.patch(
         const hasLiked = likes.includes(userId);
 
         if (hasLiked) {
-            await lessonsCollection.updateOne(
-                { _id: oid },
-                { $pull: { likes: userId }, $inc: { likesCount: -1 } }
-            );
+            await lessonsCollection.updateOne({ _id: oid }, { $pull: { likes: userId }, $inc: { likesCount: -1 } });
         } else {
-            await lessonsCollection.updateOne(
-                { _id: oid },
-                { $addToSet: { likes: userId }, $inc: { likesCount: 1 } }
-            );
+            await lessonsCollection.updateOne({ _id: oid }, { $addToSet: { likes: userId }, $inc: { likesCount: 1 } });
         }
 
         const updatedLesson = await lessonsCollection.findOne({ _id: oid });
@@ -522,7 +444,7 @@ app.patch(
     })
 );
 
-// Get comments
+// Comments
 app.get(
     "/lessons/:id/comments",
     asyncHandler(async (req, res) => {
@@ -535,7 +457,6 @@ app.get(
     })
 );
 
-// Post comment
 app.post(
     "/lessons/:id/comments",
     verifyToken,
@@ -565,7 +486,7 @@ app.post(
     })
 );
 
-// ===================== ADMIN LESSONS APIs =====================
+// ===== Admin lessons =====
 app.get(
     "/lessons",
     verifyToken,
@@ -577,7 +498,6 @@ app.get(
     })
 );
 
-// soft delete (admin)
 app.delete(
     "/lessons/:id",
     verifyToken,
@@ -587,16 +507,11 @@ app.delete(
         const oid = mustObjectId(req.params.id);
         if (!oid) return res.status(400).send({ message: "Invalid lesson id" });
 
-        const result = await lessonsCollection.updateOne(
-            { _id: oid },
-            { $set: { isDeleted: true, updatedAt: new Date() } }
-        );
-
+        const result = await lessonsCollection.updateOne({ _id: oid }, { $set: { isDeleted: true, updatedAt: new Date() } });
         res.send(result);
     })
 );
 
-// hard delete (admin)
 app.delete(
     "/admin/lessons/:id/hard-delete",
     verifyToken,
@@ -625,10 +540,7 @@ app.patch(
         if (!lesson) return res.status(404).send({ message: "Lesson not found" });
 
         const nextVisibility = lesson.visibility === "public" ? "private" : "public";
-        await lessonsCollection.updateOne(
-            { _id: oid },
-            { $set: { visibility: nextVisibility, updatedAt: new Date() } }
-        );
+        await lessonsCollection.updateOne({ _id: oid }, { $set: { visibility: nextVisibility, updatedAt: new Date() } });
 
         res.send({ success: true, visibility: nextVisibility });
     })
@@ -644,10 +556,7 @@ app.patch(
         if (!oid) return res.status(400).send({ message: "Invalid lesson id" });
 
         const { featured } = req.body;
-        await lessonsCollection.updateOne(
-            { _id: oid },
-            { $set: { isFeatured: !!featured, updatedAt: new Date() } }
-        );
+        await lessonsCollection.updateOne({ _id: oid }, { $set: { isFeatured: !!featured, updatedAt: new Date() } });
 
         res.send({ success: true });
     })
@@ -663,16 +572,13 @@ app.patch(
         if (!oid) return res.status(400).send({ message: "Invalid lesson id" });
 
         const { reviewed } = req.body;
-        await lessonsCollection.updateOne(
-            { _id: oid },
-            { $set: { isReviewed: !!reviewed, updatedAt: new Date() } }
-        );
+        await lessonsCollection.updateOne({ _id: oid }, { $set: { isReviewed: !!reviewed, updatedAt: new Date() } });
 
         res.send({ success: true });
     })
 );
 
-// ===================== STATS APIs =====================
+// ===== Stats =====
 app.get(
     "/stats/top-contributors",
     asyncHandler(async (req, res) => {
@@ -697,7 +603,7 @@ app.get(
     })
 );
 
-// ===================== REPORTS APIs =====================
+// ===== Reports =====
 app.post(
     "/reports",
     verifyToken,
@@ -742,16 +648,11 @@ app.patch(
         const oid = mustObjectId(req.params.id);
         if (!oid) return res.status(400).send({ message: "Invalid report id" });
 
-        const result = await reportsCollection.updateOne(
-            { _id: oid },
-            { $set: { status: "resolved", resolvedAt: new Date() } }
-        );
-
+        const result = await reportsCollection.updateOne({ _id: oid }, { $set: { status: "resolved", resolvedAt: new Date() } });
         res.send(result);
     })
 );
 
-// Ignore/delete report
 app.delete(
     "/reports/:id",
     verifyToken,
@@ -768,7 +669,7 @@ app.delete(
     })
 );
 
-// ===================== FAVORITES APIs =====================
+// ===== Favorites =====
 app.post(
     "/favorites",
     verifyToken,
@@ -781,17 +682,13 @@ app.post(
 
         const email = req.decoded.email;
 
-        const existing = await favoritesCollection.findOne({
-            lessonId: lessonObjectId,
-            userEmail: email,
-        });
+        const existing = await favoritesCollection.findOne({ lessonId: lessonObjectId, userEmail: email });
         if (existing) return res.status(400).send({ message: "Already in favorites" });
 
         const favDoc = { lessonId: lessonObjectId, userEmail: email, createdAt: new Date() };
         const result = await favoritesCollection.insertOne(favDoc);
 
         await lessonsCollection.updateOne({ _id: lessonObjectId }, { $inc: { savedCount: 1 } });
-
         res.send(result);
     })
 );
@@ -827,22 +724,18 @@ app.delete(
         if (!oid) return res.status(400).send({ message: "Invalid favorite id" });
 
         const email = req.decoded.email;
-
         const fav = await favoritesCollection.findOne({ _id: oid });
+
         if (!fav || fav.userEmail !== email) return res.status(403).send({ message: "forbidden" });
 
         const result = await favoritesCollection.deleteOne({ _id: oid });
 
-        await lessonsCollection.updateOne(
-            { _id: fav.lessonId, savedCount: { $gt: 0 } },
-            { $inc: { savedCount: -1 } }
-        );
-
+        await lessonsCollection.updateOne({ _id: fav.lessonId, savedCount: { $gt: 0 } }, { $inc: { savedCount: -1 } });
         res.send(result);
     })
 );
 
-// ===================== STRIPE =====================
+// ===== Stripe =====
 app.post(
     "/create-checkout-session",
     asyncHandler(async (req, res) => {
@@ -855,9 +748,7 @@ app.post(
 
         const existingUser = await usersCollection.findOne({ email });
         if (existingUser?.isPremium) {
-            return res.status(400).send({
-                message: "You are already a Premium user. Lifetime access is active.",
-            });
+            return res.status(400).send({ message: "You are already a Premium user. Lifetime access is active." });
         }
 
         const amount = 1500 * 100;
@@ -924,13 +815,12 @@ app.patch(
     })
 );
 
-// ===================== Global Error Handler =====================
+// ===== Error handler =====
 app.use((err, req, res, next) => {
     console.error("API Error:", err);
     res.status(500).send({ message: "Server error" });
 });
 
-// ===================== EXPORT + LOCAL LISTEN =====================
 module.exports = app;
 
 if (require.main === module) {

@@ -1,8 +1,20 @@
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
-const jwt = require("jsonwebtoken");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
+
+// Firebase Admin SDK
+const admin = require("firebase-admin");
+
+const path = require("path");
+const serviceAccount = require(
+    path.join(__dirname, "..", "digital-life-lessons-firebase-adminsdk.json")
+);
+
+
+admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount),
+});
 
 if (!process.env.STRIPE_SECRET) console.warn("⚠️ STRIPE_SECRET is missing in .env");
 const stripe = process.env.STRIPE_SECRET ? require("stripe")(process.env.STRIPE_SECRET) : null;
@@ -21,7 +33,8 @@ app.use(
 app.use(express.json());
 
 // ===== Helpers =====
-const asyncHandler = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
+const asyncHandler = (fn) => (req, res, next) =>
+    Promise.resolve(fn(req, res, next)).catch(next);
 
 const mustObjectId = (id) => {
     if (!ObjectId.isValid(id)) return null;
@@ -67,35 +80,21 @@ async function getCollections() {
     };
 }
 
-// ===== Auth =====
-const verifyToken = (req, res, next) => {
-    const authHeader = req.headers.authorization;
+// ===== Auth (Firebase Admin token verify) =====
+const verifyFBToken = async (req, res, next) => {
+    const authHeader = req.headers.authorization; // "Bearer <token>"
     if (!authHeader) return res.status(401).send({ message: "unauthorized" });
 
-    const parts = authHeader.split(" ");
-    const token = parts.length === 2 ? parts[1] : null;
+    const token = authHeader.split(" ")[1];
     if (!token) return res.status(401).send({ message: "unauthorized" });
 
-    jwt.verify(token, process.env.ACCESS_TOKEN_SECRET, (err, decoded) => {
-        if (err) return res.status(401).send({ message: "unauthorized" });
-        req.decoded = decoded;
+    try {
+        const decoded = await admin.auth().verifyIdToken(token);
+        req.decoded = decoded; // decoded.email, decoded.uid
         next();
-    });
-};
-
-// optional token (public endpoints এ token থাকলে decoded বসাবে)
-const optionalVerifyToken = (req, res, next) => {
-    const authHeader = req.headers.authorization;
-    if (!authHeader) return next();
-
-    const parts = authHeader.split(" ");
-    const token = parts.length === 2 ? parts[1] : null;
-    if (!token) return next();
-
-    jwt.verify(token, process.env.ACCESS_TOKEN_SECRET, (err, decoded) => {
-        if (!err && decoded?.email) req.decoded = decoded;
-        next();
-    });
+    } catch (err) {
+        return res.status(401).send({ message: "unauthorized" });
+    }
 };
 
 const verifyAdmin = asyncHandler(async (req, res, next) => {
@@ -113,43 +112,29 @@ const getIsPremium = async (email) => {
     return !!u?.isPremium;
 };
 
+// ✅ Owner/Admin middleware for lesson update/delete
+const verifyLessonOwnerOrAdmin = asyncHandler(async (req, res, next) => {
+    const { lessonsCollection, usersCollection } = await getCollections();
+    const oid = mustObjectId(req.params.id);
+    if (!oid) return res.status(400).send({ message: "Invalid lesson id" });
+
+    const lesson = await lessonsCollection.findOne({ _id: oid, isDeleted: { $ne: true } });
+    if (!lesson) return res.status(404).send({ message: "Lesson not found" });
+
+    const email = req.decoded?.email;
+    const user = await usersCollection.findOne({ email });
+
+    const isOwner = lesson.creatorEmail === email;
+    const isAdmin = user?.role === "admin";
+
+    if (!isOwner && !isAdmin) return res.status(403).send({ message: "forbidden" });
+
+    req.lesson = lesson; // optional
+    next();
+});
+
 // ===== Routes =====
-app.get("/", (req, res) => res.send("Digital Life Lessons server is running"));
-
-// JWT
-app.post(
-    "/jwt",
-    asyncHandler(async (req, res) => {
-        const { usersCollection } = await getCollections();
-        const user = req.body;
-        if (!user?.email) return res.status(400).send({ message: "email required" });
-
-        const dbUser = await usersCollection.findOne({ email: user.email });
-        if (!dbUser) return res.status(401).send({ message: "unauthorized" });
-
-        const token = jwt.sign({ email: user.email }, process.env.ACCESS_TOKEN_SECRET, { expiresIn: "7d" });
-        res.send({ token });
-    })
-);
-
-// Admin stats
-app.get(
-    "/admin/stats",
-    verifyToken,
-    verifyAdmin,
-    asyncHandler(async (req, res) => {
-        const { usersCollection, lessonsCollection, reportsCollection } = await getCollections();
-
-        const [totalUsers, totalLessons, publicLessons, totalReports] = await Promise.all([
-            usersCollection.countDocuments(),
-            lessonsCollection.countDocuments({ isDeleted: { $ne: true } }),
-            lessonsCollection.countDocuments({ visibility: "public", isDeleted: { $ne: true } }),
-            reportsCollection.countDocuments(),
-        ]);
-
-        res.send({ totalUsers, totalLessons, publicLessons, totalReports });
-    })
-);
+app.get("/", (req, res) => res.send("Digital Life Lessons server is running ✅"));
 
 // ===== Users =====
 app.post(
@@ -188,13 +173,15 @@ app.get(
     })
 );
 
+// ✅ Admin check (protected)
 app.get(
     "/users/admin/:email",
-    verifyToken,
+    verifyFBToken,
     asyncHandler(async (req, res) => {
         const { usersCollection } = await getCollections();
         const email = req.params.email;
 
+        // user can only check self
         if (req.decoded.email !== email) return res.status(403).send({ message: "forbidden" });
 
         const user = await usersCollection.findOne({ email });
@@ -202,9 +189,10 @@ app.get(
     })
 );
 
+// ✅ Admin: list users
 app.get(
     "/users",
-    verifyToken,
+    verifyFBToken,
     verifyAdmin,
     asyncHandler(async (req, res) => {
         const { usersCollection } = await getCollections();
@@ -215,23 +203,26 @@ app.get(
 
 app.patch(
     "/admin/users/:id/make-admin",
-    verifyToken,
+    verifyFBToken,
     verifyAdmin,
     asyncHandler(async (req, res) => {
         const { usersCollection } = await getCollections();
         const oid = mustObjectId(req.params.id);
         if (!oid) return res.status(400).send({ message: "Invalid user id" });
 
-        const result = await usersCollection.updateOne({ _id: oid }, { $set: { role: "admin", updatedAt: new Date() } });
-        if (result.matchedCount === 0) return res.status(404).send({ message: "User not found" });
+        const result = await usersCollection.updateOne(
+            { _id: oid },
+            { $set: { role: "admin", updatedAt: new Date() } }
+        );
 
+        if (result.matchedCount === 0) return res.status(404).send({ message: "User not found" });
         res.send(result);
     })
 );
 
 app.delete(
     "/users/:email",
-    verifyToken,
+    verifyFBToken,
     verifyAdmin,
     asyncHandler(async (req, res) => {
         const { usersCollection } = await getCollections();
@@ -246,16 +237,41 @@ app.delete(
     })
 );
 
+// ===== Admin stats =====
+app.get(
+    "/admin/stats",
+    verifyFBToken,
+    verifyAdmin,
+    asyncHandler(async (req, res) => {
+        const { usersCollection, lessonsCollection, reportsCollection } = await getCollections();
+
+        const [totalUsers, totalLessons, publicLessons, totalReports] = await Promise.all([
+            usersCollection.countDocuments(),
+            lessonsCollection.countDocuments({ isDeleted: { $ne: true } }),
+            lessonsCollection.countDocuments({ visibility: "public", isDeleted: { $ne: true } }),
+            reportsCollection.countDocuments(),
+        ]);
+
+        res.send({ totalUsers, totalLessons, publicLessons, totalReports });
+    })
+);
+
 // ===== Lessons =====
+
+// ✅ Create lesson (PROTECTED) + creatorEmail from token
 app.post(
     "/lessons",
+    verifyFBToken,
     asyncHandler(async (req, res) => {
-        const { lessonsCollection } = await getCollections();
+        const { lessonsCollection, usersCollection } = await getCollections();
         const lesson = req.body;
 
         if (!lesson?.title || !lesson?.shortDescription) {
             return res.status(400).send({ message: "Title and short description are required" });
         }
+
+        const creatorEmail = req.decoded.email;
+        const user = await usersCollection.findOne({ email: creatorEmail });
 
         const doc = {
             title: lesson.title,
@@ -265,15 +281,18 @@ app.post(
             emotionalTone: lesson.emotionalTone || "Reflective",
             accessLevel: lesson.accessLevel || "free",
             visibility: lesson.visibility || "public",
-            creatorEmail: lesson.creatorEmail || "",
-            creatorName: lesson.creatorName || "",
-            creatorPhotoURL: lesson.creatorPhotoURL || "",
-            savedCount: lesson.savedCount || 0,
+            // 🔐 Trust token/db user info
+            creatorEmail,
+            creatorName: lesson.creatorName || user?.name || "",
+            creatorPhotoURL: lesson.creatorPhotoURL || user?.photoURL || "",
+            savedCount: 0,
             likesCount: 0,
             likes: [],
             createdAt: new Date(),
             updatedAt: new Date(),
             isDeleted: false,
+            isFeatured: false,
+            isReviewed: false,
         };
 
         const result = await lessonsCollection.insertOne(doc);
@@ -281,21 +300,30 @@ app.post(
     })
 );
 
+// My lessons (recommended: protect + force email match)
 app.get(
     "/lessons/my",
+    verifyFBToken,
     asyncHandler(async (req, res) => {
         const { lessonsCollection } = await getCollections();
         const email = req.query.email;
         if (!email) return res.status(400).send({ message: "email query parameter is required" });
 
-        const lessons = await lessonsCollection.find({ creatorEmail: email, isDeleted: { $ne: true } }).sort({ createdAt: -1 }).toArray();
+        if (email !== req.decoded.email) return res.status(403).send({ message: "forbidden" });
+
+        const lessons = await lessonsCollection
+            .find({ creatorEmail: email, isDeleted: { $ne: true } })
+            .sort({ createdAt: -1 })
+            .toArray();
+
         res.send(lessons);
     })
 );
 
+// Delete my lesson (owner) — keep your old endpoint but use token verify
 app.delete(
     "/lessons/my/:id",
-    verifyToken,
+    verifyFBToken,
     asyncHandler(async (req, res) => {
         const { lessonsCollection } = await getCollections();
         const oid = mustObjectId(req.params.id);
@@ -307,7 +335,11 @@ app.delete(
         if (!lesson || lesson.isDeleted === true) return res.status(404).send({ message: "Lesson not found" });
         if (lesson.creatorEmail !== email) return res.status(403).send({ message: "forbidden" });
 
-        const result = await lessonsCollection.updateOne({ _id: oid }, { $set: { isDeleted: true, updatedAt: new Date() } });
+        const result = await lessonsCollection.updateOne(
+            { _id: oid },
+            { $set: { isDeleted: true, updatedAt: new Date() } }
+        );
+
         res.send(result);
     })
 );
@@ -349,13 +381,13 @@ app.get(
     })
 );
 
-// Featured (show all public)
+// Featured
 app.get(
     "/lessons/featured",
     asyncHandler(async (req, res) => {
         const { lessonsCollection } = await getCollections();
         const lessons = await lessonsCollection
-            .find({ visibility: "public", isDeleted: { $ne: true } })
+            .find({ visibility: "public", isDeleted: { $ne: true }, isFeatured: true })
             .sort({ createdAt: -1 })
             .limit(6)
             .toArray();
@@ -363,7 +395,7 @@ app.get(
     })
 );
 
-// Most-saved (show all public)
+// Most-saved
 app.get(
     "/lessons/most-saved",
     asyncHandler(async (req, res) => {
@@ -377,10 +409,10 @@ app.get(
     })
 );
 
-// ✅ Details: login required + premium guard
+// ✅ Details: login required + premium guard (+ owner can view)
 app.get(
     "/lessons/:id",
-    verifyToken,
+    verifyFBToken,
     asyncHandler(async (req, res) => {
         const { lessonsCollection } = await getCollections();
         const oid = mustObjectId(req.params.id);
@@ -390,17 +422,21 @@ app.get(
         if (!lesson) return res.status(404).send({ message: "Lesson not found" });
 
         if (lesson.accessLevel === "premium") {
-            const isPremium = await getIsPremium(req.decoded?.email);
-            if (!isPremium) return res.status(403).send({ message: "Premium access required" });
+            const email = req.decoded?.email;
+            const isOwner = lesson.creatorEmail === email;
+            const isPremium = await getIsPremium(email);
+            if (!isPremium && !isOwner) return res.status(403).send({ message: "Premium access required" });
         }
 
         res.send(lesson);
     })
 );
 
-// Update lesson
+// ✅ Update lesson (owner/admin protected)
 app.patch(
     "/lessons/:id",
+    verifyFBToken,
+    verifyLessonOwnerOrAdmin,
     asyncHandler(async (req, res) => {
         const { lessonsCollection } = await getCollections();
         const oid = mustObjectId(req.params.id);
@@ -412,6 +448,9 @@ app.patch(
         const updateDoc = { $set: { updatedAt: new Date() } };
         for (const f of allowedFields) if (body[f] !== undefined) updateDoc.$set[f] = body[f];
 
+        // 🔐 never allow creatorEmail to be changed
+        if (updateDoc.$set.creatorEmail) delete updateDoc.$set.creatorEmail;
+
         const result = await lessonsCollection.updateOne({ _id: oid }, updateDoc);
         res.send(result);
     })
@@ -420,13 +459,13 @@ app.patch(
 // Like
 app.patch(
     "/lessons/:id/like",
-    verifyToken,
+    verifyFBToken,
     asyncHandler(async (req, res) => {
         const { lessonsCollection } = await getCollections();
         const oid = mustObjectId(req.params.id);
         if (!oid) return res.status(400).send({ message: "Invalid lesson id" });
 
-        const userId = req.decoded.email;
+        const userId = req.decoded.email; // using email as unique
         const lesson = await lessonsCollection.findOne({ _id: oid, isDeleted: { $ne: true } });
         if (!lesson) return res.status(404).send({ message: "Lesson not found" });
 
@@ -459,7 +498,7 @@ app.get(
 
 app.post(
     "/lessons/:id/comments",
-    verifyToken,
+    verifyFBToken,
     asyncHandler(async (req, res) => {
         const { commentsCollection, usersCollection } = await getCollections();
         const oid = mustObjectId(req.params.id);
@@ -489,7 +528,7 @@ app.post(
 // ===== Admin lessons =====
 app.get(
     "/lessons",
-    verifyToken,
+    verifyFBToken,
     verifyAdmin,
     asyncHandler(async (req, res) => {
         const { lessonsCollection } = await getCollections();
@@ -500,21 +539,24 @@ app.get(
 
 app.delete(
     "/lessons/:id",
-    verifyToken,
+    verifyFBToken,
     verifyAdmin,
     asyncHandler(async (req, res) => {
         const { lessonsCollection } = await getCollections();
         const oid = mustObjectId(req.params.id);
         if (!oid) return res.status(400).send({ message: "Invalid lesson id" });
 
-        const result = await lessonsCollection.updateOne({ _id: oid }, { $set: { isDeleted: true, updatedAt: new Date() } });
+        const result = await lessonsCollection.updateOne(
+            { _id: oid },
+            { $set: { isDeleted: true, updatedAt: new Date() } }
+        );
         res.send(result);
     })
 );
 
 app.delete(
     "/admin/lessons/:id/hard-delete",
-    verifyToken,
+    verifyFBToken,
     verifyAdmin,
     asyncHandler(async (req, res) => {
         const { lessonsCollection } = await getCollections();
@@ -529,7 +571,7 @@ app.delete(
 
 app.patch(
     "/admin/lessons/:id/toggle-visibility",
-    verifyToken,
+    verifyFBToken,
     verifyAdmin,
     asyncHandler(async (req, res) => {
         const { lessonsCollection } = await getCollections();
@@ -548,7 +590,7 @@ app.patch(
 
 app.patch(
     "/admin/lessons/:id/featured",
-    verifyToken,
+    verifyFBToken,
     verifyAdmin,
     asyncHandler(async (req, res) => {
         const { lessonsCollection } = await getCollections();
@@ -564,7 +606,7 @@ app.patch(
 
 app.patch(
     "/admin/lessons/:id/reviewed",
-    verifyToken,
+    verifyFBToken,
     verifyAdmin,
     asyncHandler(async (req, res) => {
         const { lessonsCollection } = await getCollections();
@@ -606,7 +648,7 @@ app.get(
 // ===== Reports =====
 app.post(
     "/reports",
-    verifyToken,
+    verifyFBToken,
     asyncHandler(async (req, res) => {
         const { reportsCollection } = await getCollections();
         const { lessonId, reason, message } = req.body;
@@ -630,7 +672,7 @@ app.post(
 
 app.get(
     "/reports",
-    verifyToken,
+    verifyFBToken,
     verifyAdmin,
     asyncHandler(async (req, res) => {
         const { reportsCollection } = await getCollections();
@@ -641,21 +683,24 @@ app.get(
 
 app.patch(
     "/reports/:id/resolve",
-    verifyToken,
+    verifyFBToken,
     verifyAdmin,
     asyncHandler(async (req, res) => {
         const { reportsCollection } = await getCollections();
         const oid = mustObjectId(req.params.id);
         if (!oid) return res.status(400).send({ message: "Invalid report id" });
 
-        const result = await reportsCollection.updateOne({ _id: oid }, { $set: { status: "resolved", resolvedAt: new Date() } });
+        const result = await reportsCollection.updateOne(
+            { _id: oid },
+            { $set: { status: "resolved", resolvedAt: new Date() } }
+        );
         res.send(result);
     })
 );
 
 app.delete(
     "/reports/:id",
-    verifyToken,
+    verifyFBToken,
     verifyAdmin,
     asyncHandler(async (req, res) => {
         const { reportsCollection } = await getCollections();
@@ -672,7 +717,7 @@ app.delete(
 // ===== Favorites =====
 app.post(
     "/favorites",
-    verifyToken,
+    verifyFBToken,
     asyncHandler(async (req, res) => {
         const { favoritesCollection, lessonsCollection } = await getCollections();
         const { lessonId } = req.body;
@@ -695,7 +740,7 @@ app.post(
 
 app.get(
     "/favorites",
-    verifyToken,
+    verifyFBToken,
     asyncHandler(async (req, res) => {
         const { favoritesCollection } = await getCollections();
         const email = req.decoded.email;
@@ -717,7 +762,7 @@ app.get(
 
 app.delete(
     "/favorites/:id",
-    verifyToken,
+    verifyFBToken,
     asyncHandler(async (req, res) => {
         const { favoritesCollection, lessonsCollection } = await getCollections();
         const oid = mustObjectId(req.params.id);

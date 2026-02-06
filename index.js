@@ -7,9 +7,9 @@ const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const admin = require("firebase-admin");
 
 const path = require("path");
-const serviceAccount = require(
-    path.join(__dirname, "..", "digital-life-lessons-firebase-adminsdk.json")
-);
+
+const decoded = Buffer.from(process.env.FB_SERVICE_KEY, 'base64').toString('utf8')
+const serviceAccount = JSON.parse(decoded);
 
 admin.initializeApp({
     credential: admin.credential.cert(serviceAccount),
@@ -61,7 +61,7 @@ async function getDB() {
         globalCache.client = client;
         globalCache.db = db;
 
-        console.log("MongoDB connected (digital_life_lessons_db)");
+        // console.log("MongoDB connected (digital_life_lessons_db)");
         return db;
     })();
 

@@ -76,6 +76,7 @@ async function getCollections() {
         reportsCollection: database.collection("reports"),
         favoritesCollection: database.collection("favorites"),
         commentsCollection: database.collection("comments"),
+        contactMessagesCollection: database.collection("contactMessages"),
     };
 }
 
@@ -981,6 +982,29 @@ app.delete(
 
         const result = await reportsCollection.deleteMany({ lessonId });
         res.send({ success: true, deleted: result.deletedCount });
+    })
+);
+app.post(
+    "/contact-messages",
+    asyncHandler(async (req, res) => {
+        const { contactMessagesCollection } = await getCollections();
+        const { name, email, subject, message } = req.body || {};
+
+        if (!name || !email || !subject || !message) {
+            return res.status(400).send({ message: "All fields are required" });
+        }
+
+        const doc = {
+            name: name.trim(),
+            email: email.trim(),
+            subject: subject.trim(),
+            message: message.trim(),
+            createdAt: new Date(),
+            status: "new",
+        };
+
+        const result = await contactMessagesCollection.insertOne(doc);
+        res.send({ success: true, insertedId: result.insertedId });
     })
 );
 

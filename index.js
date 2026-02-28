@@ -1073,6 +1073,18 @@ app.delete(
         res.send(result);
     })
 );
+app.get("/stats/author/:email", asyncHandler(async (req, res) => {
+    const { lessonsCollection } = await getCollections();
+    const email = req.params.email;
+
+    const totalLessons = await lessonsCollection.countDocuments({
+        creatorEmail: email,
+        isDeleted: { $ne: true },
+        visibility: "public",
+    });
+
+    res.send({ totalLessons });
+}));
 
 // ===== Stripe =====
 app.post(

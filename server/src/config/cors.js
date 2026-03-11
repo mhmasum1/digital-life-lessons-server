@@ -5,7 +5,6 @@
 
 
 const allowedOrigins = [
-    "http://localhost:5173",
     process.env.SITE_DOMAIN,
 ].filter(Boolean);
 
